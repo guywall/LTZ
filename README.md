@@ -1,4 +1,4 @@
-# LTZ Operational Intelligence
+# Less Than Zero Operational Intelligence
 
 Custom PHP + MySQL web app for the LTZ weekly cadence workflow that was originally mapped for Google AppSheet.
 
@@ -11,6 +11,10 @@ Custom PHP + MySQL web app for the LTZ weekly cadence workflow that was original
 - Executive, functional, leadership, and 5x5 strategy dashboards.
 - Risk register, action tracker, target editing, lookup editing, and user creation.
 - MySQL schema and seed data from the workbook.
+
+## User guide
+
+See `docs/USER_GUIDE.md` for the plain-language user guide covering fields, dashboards, RAG scoring, learners, risks, actions, and admin screens.
 
 ## Plesk web install
 

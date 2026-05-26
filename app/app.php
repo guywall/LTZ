@@ -322,7 +322,7 @@ function show_login(string $error = ''): void
 {
     $content = '<main class="login-shell">
         <section class="login-card">
-            <p class="eyebrow">LTZ</p>
+            <p class="eyebrow">Less Than Zero</p>
             <h1>Operational Intelligence</h1>
             ' . ($error ? '<div class="alert">' . e($error) . '</div>' : '') . '
             <form method="post" action="/login">
@@ -429,7 +429,7 @@ function navigation(): string
     $user = current_user();
 
     return '<header class="topbar">
-        <a class="brand" href="/dashboard">LTZ OI</a>
+        <a class="brand" href="/dashboard">Less Than Zero OI</a>
         <nav>' . $links . '</nav>
         <div class="user-menu"><a href="/profile">' . e($user['name'] ?? '') . '</a><a href="/logout">Logout</a></div>
     </header>';

@@ -126,7 +126,7 @@ function setup_drop_tables(PDO $pdo, string $database): void
 function setup_write_config(string $configFile, array $data): void
 {
     $content = "<?php\n\nreturn [\n"
-        . "    'app_name' => 'LTZ Operational Intelligence',\n"
+        . "    'app_name' => 'Less Than Zero Operational Intelligence',\n"
         . "    'db_host' => " . setup_php_string($data['host']) . ",\n"
         . "    'db_port' => " . setup_php_string($data['port']) . ",\n"
         . "    'db_name' => " . setup_php_string($data['database']) . ",\n"
@@ -277,7 +277,7 @@ if ($errors) {
 
 setup_render('Setup', '<section class="setup-card">
     <p class="eyebrow">Plesk web installer</p>
-    <h1>Install LTZ Operational Intelligence</h1>
+    <h1>Install Less Than Zero Operational Intelligence</h1>
     <p class="muted">Create a MySQL database in Plesk first, then enter those credentials here. If the database user has permission, the installer can also create the database name below.</p>
     ' . $errorHtml . '
     <form class="setup-form" method="post" action="' . setup_e((string) ($_SERVER['REQUEST_URI'] ?? $_SERVER['SCRIPT_NAME'] ?? '/setup.php')) . '">
