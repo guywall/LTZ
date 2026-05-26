@@ -281,6 +281,20 @@ th {
     margin-top: 0;
 }
 
+.delete-form {
+    margin: 0;
+}
+
+.danger-button {
+    background: #b91c1c;
+    min-height: 34px;
+    padding: 0 10px;
+}
+
+.danger-button:hover {
+    background: #991b1b;
+}
+
 .grid-form {
     display: grid;
     gap: 14px;

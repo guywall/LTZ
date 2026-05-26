@@ -96,6 +96,48 @@ function execute_sql(string $sql, array $params = []): void
     $statement->execute($params);
 }
 
+function table_exists(string $table): bool
+{
+    $config = app_config();
+    $row = query_one(
+        'SELECT COUNT(*) AS total FROM information_schema.tables WHERE table_schema = ? AND table_name = ?',
+        [$config['db_name'], $table]
+    );
+
+    return (int) ($row['total'] ?? 0) > 0;
+}
+
+function column_exists(string $table, string $column): bool
+{
+    $config = app_config();
+    $row = query_one(
+        'SELECT COUNT(*) AS total FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND column_name = ?',
+        [$config['db_name'], $table, $column]
+    );
+
+    return (int) ($row['total'] ?? 0) > 0;
+}
+
+function learners_ready(): bool
+{
+    static $ready = null;
+    if ($ready !== null) {
+        return $ready;
+    }
+
+    return $ready = table_exists('learners') && column_exists('training_submissions', 'learner_id');
+}
+
+function require_learners_ready(): void
+{
+    if (learners_ready()) {
+        return;
+    }
+
+    render_page('Database Upgrade Required', '<section class="panel"><h1>Database upgrade required</h1><p>The learner records feature needs a small database migration before the Training and Learners screens can load.</p><p>Upload <code>public/migrate.php</code>, then visit <a href="/migrate.php">/migrate.php</a> and run the learner migration.</p></section>');
+    exit;
+}
+
 function csrf_token(): string
 {
     if (empty($_SESSION['csrf_token'])) {
@@ -252,11 +294,17 @@ function handle_post(string $path): void
     match ($path) {
         '/login' => handle_login_post(),
         '/barbers' => store_barber_submission(),
+        '/barbers/delete' => delete_barber_submission(),
         '/training' => store_training_submission(),
+        '/training/delete' => delete_training_submission(),
         '/social' => store_social_submission(),
+        '/social/delete' => delete_social_submission(),
         '/hr' => store_hr_submission(),
+        '/hr/delete' => delete_hr_submission(),
         '/risks' => store_risk(),
+        '/risks/delete' => delete_risk(),
         '/actions' => store_action(),
+        '/actions/delete' => delete_action(),
         '/profile' => change_own_password(),
         '/admin/users' => store_user(),
         '/admin/users/reset-password' => reset_user_password(),
@@ -387,7 +435,7 @@ function selected_week(): string
 {
     $week = (string) ($_GET['week'] ?? '');
     if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $week)) {
-        return $week;
+        return normalize_week_start($week);
     }
 
     $latest = query_one(
@@ -399,22 +447,84 @@ function selected_week(): string
         ) weeks"
     );
 
-    return $latest['week_start'] ?? date('Y-m-d', strtotime('monday this week'));
+    return normalize_week_start($latest['week_start'] ?? date('Y-m-d'));
+}
+
+function normalize_week_start(string $date): string
+{
+    $timestamp = strtotime($date);
+    if ($timestamp === false) {
+        $timestamp = time();
+    }
+
+    return date('Y-m-d', strtotime('monday this week', $timestamp));
+}
+
+function week_bounds(string $week): array
+{
+    $start = normalize_week_start($week);
+    return [$start, date('Y-m-d', strtotime($start . ' +6 days'))];
+}
+
+function week_options(string $selected): string
+{
+    $selected = normalize_week_start($selected);
+    $weeks = [$selected => true];
+
+    $rows = query_all(
+        "SELECT DISTINCT week_start FROM (
+            SELECT week_start FROM weekly_barber_submissions
+            UNION ALL SELECT week_start FROM training_submissions
+            UNION ALL SELECT week_start FROM brand_submissions
+            UNION ALL SELECT week_start FROM hr_recruitment_submissions
+        ) weeks
+        WHERE week_start IS NOT NULL
+        ORDER BY week_start DESC
+        LIMIT 40"
+    );
+
+    foreach ($rows as $row) {
+        $weeks[normalize_week_start((string) $row['week_start'])] = true;
+    }
+
+    for ($i = -8; $i <= 4; $i++) {
+        $weeks[date('Y-m-d', strtotime("monday this week {$i} weeks"))] = true;
+    }
+
+    $weekKeys = array_keys($weeks);
+    rsort($weekKeys);
+    $html = '';
+    foreach ($weekKeys as $week) {
+        $isSelected = $week === $selected ? ' selected' : '';
+        $label = 'Week commencing ' . date('D j M Y', strtotime($week));
+        $html .= '<option value="' . e($week) . '"' . $isSelected . '>' . e($label) . '</option>';
+    }
+
+    return $html;
 }
 
 function week_filter(string $basePath): string
 {
     $week = selected_week();
     return '<form class="filterbar" method="get" action="' . e($basePath) . '">
-        <label>Week<input type="date" name="week" value="' . e($week) . '"></label>
+        <label>Week commencing<select name="week">' . week_options($week) . '</select></label>
         <button type="submit">Apply</button>
     </form>';
+}
+
+function week_select_field(string $name, string $selected): string
+{
+    return '<select name="' . e($name) . '" required>' . week_options($selected) . '</select>';
 }
 
 function lookup_options(string $table, ?int $selected = null): string
 {
     $allowed = ['sites', 'barbers', 'brands', 'learners', 'recruitment_roles', 'users'];
     if (!in_array($table, $allowed, true)) {
+        return '';
+    }
+
+    if ($table === 'learners' && !learners_ready()) {
         return '';
     }
 
@@ -456,6 +566,39 @@ function card(string $label, string $value, string $rag = '', string $href = '')
     }
 
     return '<article class="metric">' . $inner . '</article>';
+}
+
+function delete_form(string $action, int $id, string $label = 'Delete'): string
+{
+    return '<form class="delete-form" method="post" action="' . e($action) . '" onsubmit="return confirm(\'Delete this entry? This cannot be undone.\')">'
+        . csrf_field()
+        . '<input type="hidden" name="id" value="' . $id . '">'
+        . '<button class="danger-button" type="submit">' . e($label) . '</button>'
+        . '</form>';
+}
+
+function delete_by_id(string $table, int $id): ?string
+{
+    $allowed = [
+        'weekly_barber_submissions',
+        'training_submissions',
+        'brand_submissions',
+        'hr_recruitment_submissions',
+        'risk_register',
+        'action_tracker',
+    ];
+
+    if (!in_array($table, $allowed, true)) {
+        return null;
+    }
+
+    $row = query_one("SELECT week_start FROM {$table} WHERE id = ?", [$id]);
+    if (!$row) {
+        return null;
+    }
+
+    execute_sql("DELETE FROM {$table} WHERE id = ?", [$id]);
+    return normalize_week_start((string) $row['week_start']);
 }
 
 function show_dashboard(): void
@@ -576,6 +719,7 @@ function show_barber_dashboard(): void
 function show_training_dashboard(): void
 {
     require_area('training');
+    require_learners_ready();
     $week = selected_week();
     $targets = targets_for_kpi();
     $rows = training_rows($week);
@@ -607,7 +751,7 @@ function show_training_dashboard(): void
     render_page('Training Dashboard', '<section class="hero"><div><p class="eyebrow">Training dashboard</p><h1>Learner health</h1><p>Attendance, progress, EPA readiness, and safeguarding pressure for the selected week.</p></div>' . week_filter('/dashboard') . '</section>
     <section class="metric-grid">' . $cards . '</section>
     <div class="two-col">' . insight_panel('Performing strongly', $strong, 'No learners are green overall yet for this week.') . insight_panel('Areas to improve', $attention, 'No learner interventions highlighted this week.') . '</div>
-    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><span><a href="/learners">Learner records</a> · <a href="/training?week=' . e($week) . '">Add or review submissions</a></span></div><table><thead><tr><th>Learner</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>Attendance RAG</th><th>Safeguarding RAG</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><span><a href="/learners">Learner records</a> | <a href="/training?week=' . e($week) . '">Add or review submissions</a></span></div><table><thead><tr><th>Learner</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>Attendance RAG</th><th>Safeguarding RAG</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function show_social_dashboard(): void
@@ -615,7 +759,8 @@ function show_social_dashboard(): void
     require_area('social');
     $week = selected_week();
     $targets = targets_for_kpi();
-    $rows = query_all('SELECT b.*, brands.name AS brand FROM brand_submissions b JOIN brands ON brands.id = b.brand_id WHERE b.week_start = ? ORDER BY brands.name', [$week]);
+    [$start, $end] = week_bounds($week);
+    $rows = query_all('SELECT b.*, brands.name AS brand FROM brand_submissions b JOIN brands ON brands.id = b.brand_id WHERE b.week_start BETWEEN ? AND ? ORDER BY brands.name', [$start, $end]);
     $brandCount = max(count($rows), 1);
     $posts = array_sum(array_map('intval', array_column($rows, 'posts')));
     $reels = array_sum(array_map('intval', array_column($rows, 'reels')));
@@ -651,7 +796,8 @@ function show_hr_dashboard(): void
 {
     require_area('hr');
     $week = selected_week();
-    $rows = query_all('SELECT h.*, r.name AS role_name FROM hr_recruitment_submissions h JOIN recruitment_roles r ON r.id = h.role_id WHERE h.week_start = ? ORDER BY r.name', [$week]);
+    [$start, $end] = week_bounds($week);
+    $rows = query_all('SELECT h.*, r.name AS role_name FROM hr_recruitment_submissions h JOIN recruitment_roles r ON r.id = h.role_id WHERE h.week_start BETWEEN ? AND ? ORDER BY r.name', [$start, $end]);
     $required = array_sum(array_map('intval', array_column($rows, 'required_count')));
     $pipeline = array_sum(array_map('intval', array_column($rows, 'active_pipeline')));
     $interviews = array_sum(array_map('intval', array_column($rows, 'interviews')));
@@ -687,16 +833,20 @@ function show_hr_dashboard(): void
 
 function executive_metrics(string $week, array $targets): array
 {
-    $weeklyRtb = (float) (query_one('SELECT COALESCE(SUM(rtb_cash + rtb_card), 0) AS total FROM weekly_barber_submissions WHERE week_start = ?', [$week])['total'] ?? 0);
-    $occupied = (int) (query_one('SELECT COUNT(*) AS total FROM weekly_barber_submissions WHERE week_start = ? AND (rtb_cash + rtb_card) > 0', [$week])['total'] ?? 0);
-    $learners = (int) (query_one('SELECT COUNT(DISTINCT learner_id) AS total FROM training_submissions WHERE week_start = ? AND learner_id IS NOT NULL', [$week])['total'] ?? 0);
-    $socialLeads = (int) (query_one('SELECT COALESCE(SUM(leads), 0) AS total FROM brand_submissions WHERE week_start = ?', [$week])['total'] ?? 0);
+    [$start, $end] = week_bounds($week);
+    $weeklyRtb = (float) (query_one('SELECT COALESCE(SUM(rtb_cash + rtb_card), 0) AS total FROM weekly_barber_submissions WHERE week_start BETWEEN ? AND ?', [$start, $end])['total'] ?? 0);
+    $occupied = (int) (query_one('SELECT COUNT(*) AS total FROM weekly_barber_submissions WHERE week_start BETWEEN ? AND ? AND (rtb_cash + rtb_card) > 0', [$start, $end])['total'] ?? 0);
+    $learnerSql = column_exists('training_submissions', 'learner_id')
+        ? 'SELECT COUNT(DISTINCT learner_id) AS total FROM training_submissions WHERE week_start BETWEEN ? AND ? AND learner_id IS NOT NULL'
+        : 'SELECT COUNT(DISTINCT learner) AS total FROM training_submissions WHERE week_start BETWEEN ? AND ?';
+    $learners = (int) (query_one($learnerSql, [$start, $end])['total'] ?? 0);
+    $socialLeads = (int) (query_one('SELECT COALESCE(SUM(leads), 0) AS total FROM brand_submissions WHERE week_start BETWEEN ? AND ?', [$start, $end])['total'] ?? 0);
     $senior = (int) (query_one(
         'SELECT COALESCE(MAX(active_pipeline), 0) AS total
          FROM hr_recruitment_submissions h
          JOIN recruitment_roles r ON r.id = h.role_id
-         WHERE h.week_start = ? AND r.name = ?',
-        [$week, 'Senior Barber']
+         WHERE h.week_start BETWEEN ? AND ? AND r.name = ?',
+        [$start, $end, 'Senior Barber']
     )['total'] ?? 0);
     $openActions = (int) (query_one("SELECT COUNT(*) AS total FROM action_tracker WHERE status <> 'Closed'", [])['total'] ?? 0);
     $openRisks = (int) (query_one("SELECT COUNT(*) AS total FROM risk_register WHERE status <> 'Closed'", [])['total'] ?? 0);
@@ -719,15 +869,16 @@ function executive_metrics(string $week, array $targets): array
 
 function barber_rows(string $week, array $targets): array
 {
+    [$start, $end] = week_bounds($week);
     $rows = query_all(
         'SELECT w.*, s.name AS site, b.name AS barber, u.name AS submitted_by_name
          FROM weekly_barber_submissions w
          JOIN sites s ON s.id = w.site_id
          JOIN barbers b ON b.id = w.barber_id
          JOIN users u ON u.id = w.submitted_by
-         WHERE w.week_start = ?
+         WHERE w.week_start BETWEEN ? AND ?
          ORDER BY s.name, b.name',
-        [$week]
+        [$start, $end]
     );
 
     foreach ($rows as &$row) {
@@ -746,13 +897,14 @@ function show_barbers(): void
     $rows = barber_rows($week, $targets);
 
     $body = '';
+    $canDelete = can_access('barbers', true);
     foreach ($rows as $row) {
-        $body .= '<tr><td>' . e($row['site']) . '</td><td>' . e($row['barber']) . '</td><td>' . money($row['rtb']) . '</td><td>' . e($row['days_worked']) . '</td><td>' . pct($row['rebooking_pct']) . '</td><td>' . pct($row['utilisation_pct']) . '</td><td>' . badge($row['overall_rag']) . '</td></tr>';
+        $body .= '<tr><td>' . e($row['site']) . '</td><td>' . e($row['barber']) . '</td><td>' . money($row['rtb']) . '</td><td>' . e($row['days_worked']) . '</td><td>' . pct($row['rebooking_pct']) . '</td><td>' . pct($row['utilisation_pct']) . '</td><td>' . badge($row['overall_rag']) . '</td>' . ($canDelete ? '<td>' . delete_form('/barbers/delete', (int) $row['id']) . '</td>' : '') . '</tr>';
     }
 
     render_page('Barbers', '<section class="hero"><div><p class="eyebrow">Operations</p><h1>Barber submissions</h1></div>' . week_filter('/barbers') . '</section>
     ' . submission_form_barber($week) . '
-    <section class="panel"><h2>Weekly barber RAG</h2><table><thead><tr><th>Site</th><th>Barber</th><th>RTB</th><th>Days</th><th>Rebooking</th><th>Utilisation</th><th>RAG</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    <section class="panel"><h2>Weekly barber RAG</h2><table><thead><tr><th>Site</th><th>Barber</th><th>RTB</th><th>Days</th><th>Rebooking</th><th>Utilisation</th><th>RAG</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function submission_form_barber(string $week): string
@@ -762,7 +914,7 @@ function submission_form_barber(string $week): string
     }
 
     return '<section class="panel"><h2>Add barber submission</h2><form class="grid-form" method="post" action="/barbers?week=' . e($week) . '">' . csrf_field() . '
-        <label>Week<input type="date" name="week_start" value="' . e($week) . '" required></label>
+        <label>Week commencing' . week_select_field('week_start', $week) . '</label>
         <label>Site<select name="site_id" required>' . lookup_options('sites') . '</select></label>
         <label>Barber<select name="barber_id" required>' . lookup_options('barbers') . '</select></label>
         <label>RTB cash<input type="number" name="rtb_cash" min="0" step="0.01" required></label>
@@ -779,11 +931,12 @@ function submission_form_barber(string $week): string
 function store_barber_submission(): void
 {
     require_area('barbers', true);
+    $weekStart = normalize_week_start((string) $_POST['week_start']);
     execute_sql(
         'INSERT INTO weekly_barber_submissions (week_start, site_id, barber_id, rtb_cash, rtb_card, total_sales, days_worked, rebooking_pct, utilisation_pct, notes, submitted_by)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
-            $_POST['week_start'],
+            $weekStart,
             (int) $_POST['site_id'],
             (int) $_POST['barber_id'],
             (float) $_POST['rtb_cash'],
@@ -797,34 +950,45 @@ function store_barber_submission(): void
         ]
     );
     flash('Barber submission saved.');
-    redirect('/barbers?week=' . e((string) $_POST['week_start']));
+    redirect('/barbers?week=' . rawurlencode($weekStart));
+}
+
+function delete_barber_submission(): void
+{
+    require_area('barbers', true);
+    $week = delete_by_id('weekly_barber_submissions', (int) ($_POST['id'] ?? 0)) ?? selected_week();
+    flash('Barber submission deleted.');
+    redirect('/barbers?week=' . rawurlencode($week));
 }
 
 function show_training(): void
 {
     require_area('training');
+    require_learners_ready();
     $week = selected_week();
     $targets = targets_for_kpi();
     $rows = training_rows($week);
     $body = '';
+    $canDelete = can_access('training', true);
     foreach ($rows as $row) {
         $rag = training_rag((float) $row['attendance_pct'], (int) $row['safeguarding_flags'], $targets);
-        $body .= '<tr><td><a href="/learners/view?id=' . (int) $row['learner_id'] . '">' . e($row['learner_name']) . '</a></td><td>' . pct($row['attendance_pct']) . '</td><td>' . pct($row['progress_pct']) . '</td><td>' . e($row['epa_readiness']) . '</td><td>' . (int) $row['safeguarding_flags'] . '</td><td>' . badge($rag['overall_rag']) . '</td></tr>';
+        $body .= '<tr><td><a href="/learners/view?id=' . (int) $row['learner_id'] . '">' . e($row['learner_name']) . '</a></td><td>' . pct($row['attendance_pct']) . '</td><td>' . pct($row['progress_pct']) . '</td><td>' . e($row['epa_readiness']) . '</td><td>' . (int) $row['safeguarding_flags'] . '</td><td>' . badge($rag['overall_rag']) . '</td>' . ($canDelete ? '<td>' . delete_form('/training/delete', (int) $row['id']) . '</td>' : '') . '</tr>';
     }
 
-    render_page('Training', '<section class="hero"><div><p class="eyebrow">Training</p><h1>Learner health</h1></div>' . week_filter('/training') . '</section>' . submission_form_training($week) . '<section class="panel"><div class="panel-title"><h2>Weekly learner RAG</h2><a href="/learners">Learner records</a></div><table><thead><tr><th>Learner</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>RAG</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    render_page('Training', '<section class="hero"><div><p class="eyebrow">Training</p><h1>Learner health</h1></div>' . week_filter('/training') . '</section>' . submission_form_training($week) . '<section class="panel"><div class="panel-title"><h2>Weekly learner RAG</h2><a href="/learners">Learner records</a></div><table><thead><tr><th>Learner</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>RAG</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function training_rows(string $week): array
 {
+    [$start, $end] = week_bounds($week);
     return query_all(
         'SELECT t.*, COALESCE(l.name, t.learner) AS learner_name, l.status AS learner_status, u.name AS submitted_by_name
          FROM training_submissions t
          LEFT JOIN learners l ON l.id = t.learner_id
          JOIN users u ON u.id = t.submitted_by
-         WHERE t.week_start = ?
+         WHERE t.week_start BETWEEN ? AND ?
          ORDER BY learner_name',
-        [$week]
+        [$start, $end]
     );
 }
 
@@ -835,7 +999,7 @@ function submission_form_training(string $week): string
     }
 
     return '<section class="panel"><h2>Add training submission</h2><form class="grid-form" method="post" action="/training?week=' . e($week) . '">' . csrf_field() . '
-        <label>Week<input type="date" name="week_start" value="' . e($week) . '" required></label>
+        <label>Week commencing' . week_select_field('week_start', $week) . '</label>
         <label>Learner<select name="learner_id" required>' . lookup_options('learners') . '</select></label>
         <label>Attendance %<input type="number" name="attendance_pct" min="0" max="100" step="0.1" required></label>
         <label>Progress %<input type="number" name="progress_pct" min="0" max="100" step="0.1" required></label>
@@ -849,11 +1013,13 @@ function submission_form_training(string $week): string
 function store_training_submission(): void
 {
     require_area('training', true);
+    require_learners_ready();
+    $weekStart = normalize_week_start((string) $_POST['week_start']);
     execute_sql(
         'INSERT INTO training_submissions (week_start, learner_id, learner, attendance_pct, progress_pct, epa_readiness, safeguarding_flags, risk_notes, submitted_by)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
-            $_POST['week_start'],
+            $weekStart,
             (int) $_POST['learner_id'],
             learner_name((int) $_POST['learner_id']),
             percentage_input_to_decimal($_POST['attendance_pct']),
@@ -865,7 +1031,15 @@ function store_training_submission(): void
         ]
     );
     flash('Training submission saved.');
-    redirect('/training?week=' . e((string) $_POST['week_start']));
+    redirect('/training?week=' . rawurlencode($weekStart));
+}
+
+function delete_training_submission(): void
+{
+    require_area('training', true);
+    $week = delete_by_id('training_submissions', (int) ($_POST['id'] ?? 0)) ?? selected_week();
+    flash('Training log deleted.');
+    redirect('/training?week=' . rawurlencode($week));
 }
 
 function learner_name(int $learnerId): string
@@ -877,6 +1051,7 @@ function learner_name(int $learnerId): string
 function show_learners(): void
 {
     require_area('training');
+    require_learners_ready();
     $targets = targets_for_kpi();
     $rows = query_all(
         'SELECT l.*,
@@ -904,6 +1079,7 @@ function show_learners(): void
 function show_learner_record(): void
 {
     require_area('training');
+    require_learners_ready();
     $learnerId = (int) ($_GET['id'] ?? 0);
     $learner = query_one('SELECT * FROM learners WHERE id = ?', [$learnerId]);
     if (!$learner) {
@@ -981,14 +1157,16 @@ function show_social(): void
     require_area('social');
     $week = selected_week();
     $targets = targets_for_kpi();
-    $rows = query_all('SELECT b.*, brands.name AS brand FROM brand_submissions b JOIN brands ON brands.id = b.brand_id WHERE b.week_start = ? ORDER BY brands.name', [$week]);
+    [$start, $end] = week_bounds($week);
+    $rows = query_all('SELECT b.*, brands.name AS brand FROM brand_submissions b JOIN brands ON brands.id = b.brand_id WHERE b.week_start BETWEEN ? AND ? ORDER BY brands.name', [$start, $end]);
     $body = '';
+    $canDelete = can_access('social', true);
     foreach ($rows as $row) {
         $rag = brand_rag((int) $row['posts'], (int) $row['reels'], (int) $row['leads'], (int) $row['follow_ups'], $targets);
-        $body .= '<tr><td>' . e($row['brand']) . '</td><td>' . (int) $row['posts'] . '</td><td>' . (int) $row['reels'] . '</td><td>' . number_format((int) $row['reach']) . '</td><td>' . (int) $row['leads'] . '</td><td>' . (int) $row['follow_ups'] . '</td><td>' . pct($row['conversion_pct']) . '</td><td>' . badge($rag['overall_rag']) . '</td></tr>';
+        $body .= '<tr><td>' . e($row['brand']) . '</td><td>' . (int) $row['posts'] . '</td><td>' . (int) $row['reels'] . '</td><td>' . number_format((int) $row['reach']) . '</td><td>' . (int) $row['leads'] . '</td><td>' . (int) $row['follow_ups'] . '</td><td>' . pct($row['conversion_pct']) . '</td><td>' . badge($rag['overall_rag']) . '</td>' . ($canDelete ? '<td>' . delete_form('/social/delete', (int) $row['id']) . '</td>' : '') . '</tr>';
     }
 
-    render_page('Social', '<section class="hero"><div><p class="eyebrow">Brand</p><h1>Social media metrics</h1></div>' . week_filter('/social') . '</section>' . submission_form_social($week) . '<section class="panel"><h2>Weekly brand RAG</h2><table><thead><tr><th>Brand</th><th>Posts</th><th>Reels</th><th>Reach</th><th>Leads</th><th>Follow-ups</th><th>Conversion</th><th>RAG</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    render_page('Social', '<section class="hero"><div><p class="eyebrow">Brand</p><h1>Social media metrics</h1></div>' . week_filter('/social') . '</section>' . submission_form_social($week) . '<section class="panel"><h2>Weekly brand RAG</h2><table><thead><tr><th>Brand</th><th>Posts</th><th>Reels</th><th>Reach</th><th>Leads</th><th>Follow-ups</th><th>Conversion</th><th>RAG</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function submission_form_social(string $week): string
@@ -998,7 +1176,7 @@ function submission_form_social(string $week): string
     }
 
     return '<section class="panel"><h2>Add social submission</h2><form class="grid-form" method="post" action="/social?week=' . e($week) . '">' . csrf_field() . '
-        <label>Week<input type="date" name="week_start" value="' . e($week) . '" required></label>
+        <label>Week commencing' . week_select_field('week_start', $week) . '</label>
         <label>Brand<select name="brand_id" required>' . lookup_options('brands') . '</select></label>
         <label>Posts<input type="number" name="posts" min="0" step="1" required></label>
         <label>Reels<input type="number" name="reels" min="0" step="1" required></label>
@@ -1015,11 +1193,12 @@ function submission_form_social(string $week): string
 function store_social_submission(): void
 {
     require_area('social', true);
+    $weekStart = normalize_week_start((string) $_POST['week_start']);
     execute_sql(
         'INSERT INTO brand_submissions (week_start, brand_id, posts, reels, reach, engagement, leads, follow_ups, conversion_pct, notes, submitted_by)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
-            $_POST['week_start'],
+            $weekStart,
             (int) $_POST['brand_id'],
             (int) $_POST['posts'],
             (int) $_POST['reels'],
@@ -1033,22 +1212,32 @@ function store_social_submission(): void
         ]
     );
     flash('Social submission saved.');
-    redirect('/social?week=' . e((string) $_POST['week_start']));
+    redirect('/social?week=' . rawurlencode($weekStart));
+}
+
+function delete_social_submission(): void
+{
+    require_area('social', true);
+    $week = delete_by_id('brand_submissions', (int) ($_POST['id'] ?? 0)) ?? selected_week();
+    flash('Social submission deleted.');
+    redirect('/social?week=' . rawurlencode($week));
 }
 
 function show_hr(): void
 {
     require_area('hr');
     $week = selected_week();
-    $rows = query_all('SELECT h.*, r.name AS role_name FROM hr_recruitment_submissions h JOIN recruitment_roles r ON r.id = h.role_id WHERE h.week_start = ? ORDER BY r.name', [$week]);
+    [$start, $end] = week_bounds($week);
+    $rows = query_all('SELECT h.*, r.name AS role_name FROM hr_recruitment_submissions h JOIN recruitment_roles r ON r.id = h.role_id WHERE h.week_start BETWEEN ? AND ? ORDER BY r.name', [$start, $end]);
     $body = '';
+    $canDelete = can_access('hr', true);
     foreach ($rows as $row) {
         $rag = recruitment_rag((int) $row['required_count'], (int) $row['active_pipeline']);
         $gap = (int) $row['required_count'] - (int) $row['active_pipeline'];
-        $body .= '<tr><td>' . e($row['role_name']) . '</td><td>' . (int) $row['required_count'] . '</td><td>' . (int) $row['active_pipeline'] . '</td><td>' . (int) $row['interviews'] . '</td><td>' . (int) $row['offers'] . '</td><td>' . $gap . '</td><td>' . badge($rag['pipeline_rag']) . '</td></tr>';
+        $body .= '<tr><td>' . e($row['role_name']) . '</td><td>' . (int) $row['required_count'] . '</td><td>' . (int) $row['active_pipeline'] . '</td><td>' . (int) $row['interviews'] . '</td><td>' . (int) $row['offers'] . '</td><td>' . $gap . '</td><td>' . badge($rag['pipeline_rag']) . '</td>' . ($canDelete ? '<td>' . delete_form('/hr/delete', (int) $row['id']) . '</td>' : '') . '</tr>';
     }
 
-    render_page('HR', '<section class="hero"><div><p class="eyebrow">People</p><h1>Recruitment pipeline</h1></div>' . week_filter('/hr') . '</section>' . submission_form_hr($week) . '<section class="panel"><h2>Weekly HR RAG</h2><table><thead><tr><th>Role</th><th>Required</th><th>Pipeline</th><th>Interviews</th><th>Offers</th><th>Gap</th><th>RAG</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    render_page('HR', '<section class="hero"><div><p class="eyebrow">People</p><h1>Recruitment pipeline</h1></div>' . week_filter('/hr') . '</section>' . submission_form_hr($week) . '<section class="panel"><h2>Weekly HR RAG</h2><table><thead><tr><th>Role</th><th>Required</th><th>Pipeline</th><th>Interviews</th><th>Offers</th><th>Gap</th><th>RAG</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function submission_form_hr(string $week): string
@@ -1058,7 +1247,7 @@ function submission_form_hr(string $week): string
     }
 
     return '<section class="panel"><h2>Add HR submission</h2><form class="grid-form" method="post" action="/hr?week=' . e($week) . '">' . csrf_field() . '
-        <label>Week<input type="date" name="week_start" value="' . e($week) . '" required></label>
+        <label>Week commencing' . week_select_field('week_start', $week) . '</label>
         <label>Role<select name="role_id" required>' . lookup_options('recruitment_roles') . '</select></label>
         <label>Required<input type="number" name="required_count" min="0" step="1" required></label>
         <label>Active pipeline<input type="number" name="active_pipeline" min="0" step="1" required></label>
@@ -1072,11 +1261,12 @@ function submission_form_hr(string $week): string
 function store_hr_submission(): void
 {
     require_area('hr', true);
+    $weekStart = normalize_week_start((string) $_POST['week_start']);
     execute_sql(
         'INSERT INTO hr_recruitment_submissions (week_start, role_id, required_count, active_pipeline, interviews, offers, notes, submitted_by)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         [
-            $_POST['week_start'],
+            $weekStart,
             (int) $_POST['role_id'],
             (int) $_POST['required_count'],
             (int) $_POST['active_pipeline'],
@@ -1087,23 +1277,32 @@ function store_hr_submission(): void
         ]
     );
     flash('HR submission saved.');
-    redirect('/hr?week=' . e((string) $_POST['week_start']));
+    redirect('/hr?week=' . rawurlencode($weekStart));
+}
+
+function delete_hr_submission(): void
+{
+    require_area('hr', true);
+    $week = delete_by_id('hr_recruitment_submissions', (int) ($_POST['id'] ?? 0)) ?? selected_week();
+    flash('HR submission deleted.');
+    redirect('/hr?week=' . rawurlencode($week));
 }
 
 function leadership_rows(string $week, array $targets): array
 {
+    [$start, $end] = week_bounds($week);
     $leaders = query_all('SELECT leaders.*, users.id AS user_id FROM leaders LEFT JOIN users ON users.name = leaders.name ORDER BY leaders.id');
     $barberScores = array_column(barber_rows($week, $targets), 'score');
     $brandScores = [];
-    foreach (query_all('SELECT * FROM brand_submissions WHERE week_start = ?', [$week]) as $row) {
+    foreach (query_all('SELECT * FROM brand_submissions WHERE week_start BETWEEN ? AND ?', [$start, $end]) as $row) {
         $brandScores[] = brand_rag((int) $row['posts'], (int) $row['reels'], (int) $row['leads'], (int) $row['follow_ups'], $targets)['score'];
     }
     $trainingScores = [];
-    foreach (query_all('SELECT * FROM training_submissions WHERE week_start = ?', [$week]) as $row) {
+    foreach (query_all('SELECT * FROM training_submissions WHERE week_start BETWEEN ? AND ?', [$start, $end]) as $row) {
         $trainingScores[] = training_rag((float) $row['attendance_pct'], (int) $row['safeguarding_flags'], $targets)['score'];
     }
     $hrScores = [];
-    foreach (query_all('SELECT * FROM hr_recruitment_submissions WHERE week_start = ?', [$week]) as $row) {
+    foreach (query_all('SELECT * FROM hr_recruitment_submissions WHERE week_start BETWEEN ? AND ?', [$start, $end]) as $row) {
         $hrScores[] = recruitment_rag((int) $row['required_count'], (int) $row['active_pipeline'])['score'];
     }
 
@@ -1185,17 +1384,18 @@ function show_risks(): void
     require_area('leadership');
     $rows = query_all('SELECT r.*, u.name AS owner FROM risk_register r JOIN users u ON u.id = r.owner_user_id ORDER BY r.status, r.priority, r.due_date');
     $body = '';
+    $canDelete = can_access('leadership', true);
     foreach ($rows as $row) {
-        $body .= '<tr><td>' . e($row['week_start']) . '</td><td>' . e($row['trigger_label']) . '</td><td>' . e($row['risk']) . '</td><td>' . e($row['owner']) . '</td><td>' . e($row['priority']) . '</td><td>' . e($row['status']) . '</td><td>' . e($row['due_date']) . '</td></tr>';
+        $body .= '<tr><td>' . e(normalize_week_start((string) $row['week_start'])) . '</td><td>' . e($row['trigger_label']) . '</td><td>' . e($row['risk']) . '</td><td>' . e($row['owner']) . '</td><td>' . e($row['priority']) . '</td><td>' . e($row['status']) . '</td><td>' . e($row['due_date']) . '</td>' . ($canDelete ? '<td>' . delete_form('/risks/delete', (int) $row['id']) . '</td>' : '') . '</tr>';
     }
 
-    render_page('Risks', '<section class="hero"><div><p class="eyebrow">Governance</p><h1>Risk register</h1></div></section>' . risk_form() . '<section class="panel"><table><thead><tr><th>Week</th><th>Trigger</th><th>Risk</th><th>Owner</th><th>Priority</th><th>Status</th><th>Due</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    render_page('Risks', '<section class="hero"><div><p class="eyebrow">Governance</p><h1>Risk register</h1></div></section>' . risk_form() . '<section class="panel"><table><thead><tr><th>Week commencing</th><th>Trigger</th><th>Risk</th><th>Owner</th><th>Priority</th><th>Status</th><th>Due</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function risk_form(): string
 {
     return '<section class="panel"><h2>Add risk</h2><form class="grid-form" method="post" action="/risks">' . csrf_field() . '
-        <label>Week<input type="date" name="week_start" value="' . e(selected_week()) . '" required></label>
+        <label>Week commencing' . week_select_field('week_start', selected_week()) . '</label>
         <label>Owner<select name="owner_user_id">' . lookup_options('users') . '</select></label>
         <label>Priority<select name="priority"><option>High</option><option>Medium</option><option>Low</option></select></label>
         <label>Status<select name="status"><option>Open</option><option>In Progress</option><option>Closed</option></select></label>
@@ -1210,11 +1410,20 @@ function risk_form(): string
 function store_risk(): void
 {
     require_area('leadership', true);
+    $weekStart = normalize_week_start((string) $_POST['week_start']);
     execute_sql(
         'INSERT INTO risk_register (week_start, trigger_label, risk, owner_user_id, priority, status, due_date, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [$_POST['week_start'], $_POST['trigger_label'], $_POST['risk'], (int) $_POST['owner_user_id'], $_POST['priority'], $_POST['status'], $_POST['due_date'] ?: null, $_POST['notes'] ?: null]
+        [$weekStart, $_POST['trigger_label'], $_POST['risk'], (int) $_POST['owner_user_id'], $_POST['priority'], $_POST['status'], $_POST['due_date'] ?: null, $_POST['notes'] ?: null]
     );
     flash('Risk saved.');
+    redirect('/risks');
+}
+
+function delete_risk(): void
+{
+    require_area('leadership', true);
+    delete_by_id('risk_register', (int) ($_POST['id'] ?? 0));
+    flash('Risk deleted.');
     redirect('/risks');
 }
 
@@ -1223,17 +1432,18 @@ function show_actions(): void
     require_area('leadership');
     $rows = query_all('SELECT a.*, u.name AS owner FROM action_tracker a JOIN users u ON u.id = a.owner_user_id ORDER BY a.status, a.priority, a.due_date');
     $body = '';
+    $canDelete = can_access('leadership', true);
     foreach ($rows as $row) {
-        $body .= '<tr><td>' . e($row['week_start']) . '</td><td>' . e($row['owner']) . '</td><td>' . e($row['action']) . '</td><td>' . e($row['linked_area']) . '</td><td>' . e($row['priority']) . '</td><td>' . e($row['status']) . '</td><td>' . e($row['due_date']) . '</td></tr>';
+        $body .= '<tr><td>' . e(normalize_week_start((string) $row['week_start'])) . '</td><td>' . e($row['owner']) . '</td><td>' . e($row['action']) . '</td><td>' . e($row['linked_area']) . '</td><td>' . e($row['priority']) . '</td><td>' . e($row['status']) . '</td><td>' . e($row['due_date']) . '</td>' . ($canDelete ? '<td>' . delete_form('/actions/delete', (int) $row['id']) . '</td>' : '') . '</tr>';
     }
 
-    render_page('Actions', '<section class="hero"><div><p class="eyebrow">Governance</p><h1>Action tracker</h1></div></section>' . action_form() . '<section class="panel"><table><thead><tr><th>Week</th><th>Owner</th><th>Action</th><th>Area</th><th>Priority</th><th>Status</th><th>Due</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    render_page('Actions', '<section class="hero"><div><p class="eyebrow">Governance</p><h1>Action tracker</h1></div></section>' . action_form() . '<section class="panel"><table><thead><tr><th>Week commencing</th><th>Owner</th><th>Action</th><th>Area</th><th>Priority</th><th>Status</th><th>Due</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function action_form(): string
 {
     return '<section class="panel"><h2>Add action</h2><form class="grid-form" method="post" action="/actions">' . csrf_field() . '
-        <label>Week<input type="date" name="week_start" value="' . e(selected_week()) . '" required></label>
+        <label>Week commencing' . week_select_field('week_start', selected_week()) . '</label>
         <label>Owner<select name="owner_user_id">' . lookup_options('users') . '</select></label>
         <label>Priority<select name="priority"><option>High</option><option>Medium</option><option>Low</option></select></label>
         <label>Status<select name="status"><option>Open</option><option>In Progress</option><option>Closed</option></select></label>
@@ -1248,11 +1458,20 @@ function action_form(): string
 function store_action(): void
 {
     require_area('leadership', true);
+    $weekStart = normalize_week_start((string) $_POST['week_start']);
     execute_sql(
         'INSERT INTO action_tracker (week_start, owner_user_id, action, due_date, status, priority, linked_area, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [$_POST['week_start'], (int) $_POST['owner_user_id'], $_POST['action'], $_POST['due_date'] ?: null, $_POST['status'], $_POST['priority'], $_POST['linked_area'], $_POST['notes'] ?: null]
+        [$weekStart, (int) $_POST['owner_user_id'], $_POST['action'], $_POST['due_date'] ?: null, $_POST['status'], $_POST['priority'], $_POST['linked_area'], $_POST['notes'] ?: null]
     );
     flash('Action saved.');
+    redirect('/actions');
+}
+
+function delete_action(): void
+{
+    require_area('leadership', true);
+    delete_by_id('action_tracker', (int) ($_POST['id'] ?? 0));
+    flash('Action deleted.');
     redirect('/actions');
 }
 
