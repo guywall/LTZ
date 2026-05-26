@@ -297,6 +297,9 @@ function handle_post(string $path): void
         '/barbers/delete' => delete_barber_submission(),
         '/training' => store_training_submission(),
         '/training/delete' => delete_training_submission(),
+        '/learners' => store_learner(),
+        '/learners/status' => update_learner_status(),
+        '/learners/delete' => delete_learner(),
         '/social' => store_social_submission(),
         '/social/delete' => delete_social_submission(),
         '/hr' => store_hr_submission(),
@@ -470,6 +473,9 @@ function week_options(string $selected): string
 {
     $selected = normalize_week_start($selected);
     $weeks = [$selected => true];
+    $thisWeek = normalize_week_start(date('Y-m-d'));
+    $lastWeek = date('Y-m-d', strtotime($thisWeek . ' -7 days'));
+    $nextWeek = date('Y-m-d', strtotime($thisWeek . ' +7 days'));
 
     $rows = query_all(
         "SELECT DISTINCT week_start FROM (
@@ -494,7 +500,22 @@ function week_options(string $selected): string
     $weekKeys = array_keys($weeks);
     rsort($weekKeys);
     $html = '';
+
+    $quickOptions = [
+        $thisWeek => 'This week',
+        $lastWeek => 'Last week',
+        $nextWeek => 'Next week',
+    ];
+    foreach ($quickOptions as $week => $label) {
+        $isSelected = $week === $selected ? ' selected' : '';
+        $html .= '<option value="' . e($week) . '"' . $isSelected . '>' . e($label . ' - w/c ' . date('D j M Y', strtotime($week))) . '</option>';
+    }
+
+    $html .= '<option disabled>Past weeks</option>';
     foreach ($weekKeys as $week) {
+        if (isset($quickOptions[$week])) {
+            continue;
+        }
         $isSelected = $week === $selected ? ' selected' : '';
         $label = 'Week commencing ' . date('D j M Y', strtotime($week));
         $html .= '<option value="' . e($week) . '"' . $isSelected . '>' . e($label) . '</option>';
@@ -529,7 +550,8 @@ function lookup_options(string $table, ?int $selected = null): string
     }
 
     $nameColumn = $table === 'users' ? 'name' : 'name';
-    $rows = query_all("SELECT id, {$nameColumn} AS name FROM {$table} ORDER BY name");
+    $where = $table === 'learners' ? " WHERE status = 'Active'" : '';
+    $rows = query_all("SELECT id, {$nameColumn} AS name FROM {$table}{$where} ORDER BY name");
     $html = '';
     foreach ($rows as $row) {
         $isSelected = (int) $row['id'] === $selected ? ' selected' : '';
@@ -1042,6 +1064,17 @@ function delete_training_submission(): void
     redirect('/training?week=' . rawurlencode($week));
 }
 
+function learner_status_options(string $selected = 'Active'): string
+{
+    $html = '';
+    foreach (['Active', 'Paused', 'Completed', 'Withdrawn'] as $status) {
+        $isSelected = $status === $selected ? ' selected' : '';
+        $html .= '<option value="' . e($status) . '"' . $isSelected . '>' . e($status) . '</option>';
+    }
+
+    return $html;
+}
+
 function learner_name(int $learnerId): string
 {
     $row = query_one('SELECT name FROM learners WHERE id = ?', [$learnerId]);
@@ -1066,14 +1099,87 @@ function show_learners(): void
     );
 
     $body = '';
+    $canManage = can_access('training', true);
     foreach ($rows as $row) {
         $attendance = $row['avg_attendance'] === null ? null : (float) $row['avg_attendance'];
         $attendanceRag = $attendance === null ? '' : badge(rag_threshold($attendance, $targets['training_attendance_target'], $targets['training_attendance_amber']));
-        $body .= '<tr><td><a href="/learners/view?id=' . (int) $row['id'] . '">' . e($row['name']) . '</a></td><td>' . e($row['status']) . '</td><td>' . (int) $row['log_count'] . '</td><td>' . ($attendance === null ? '-' : pct($attendance)) . '</td><td>' . ($row['avg_progress'] === null ? '-' : pct($row['avg_progress'])) . '</td><td>' . e($row['latest_week'] ?? '-') . '</td><td>' . $attendanceRag . '</td></tr>';
+        $manage = '';
+        if ($canManage) {
+            $manage = '<td><form class="table-form learner-status-form" method="post" action="/learners/status">' . csrf_field() . '<input type="hidden" name="id" value="' . (int) $row['id'] . '"><select name="status">' . learner_status_options((string) $row['status']) . '</select><button type="submit">Update</button></form></td><td>' . delete_form('/learners/delete', (int) $row['id'], ((int) $row['log_count'] > 0 ? 'Archive' : 'Remove')) . '</td>';
+        }
+        $body .= '<tr><td><a href="/learners/view?id=' . (int) $row['id'] . '">' . e($row['name']) . '</a></td><td>' . e($row['status']) . '</td><td>' . (int) $row['log_count'] . '</td><td>' . ($attendance === null ? '-' : pct($attendance)) . '</td><td>' . ($row['avg_progress'] === null ? '-' : pct($row['avg_progress'])) . '</td><td>' . e($row['latest_week'] ?? '-') . '</td><td>' . $attendanceRag . '</td>' . $manage . '</tr>';
     }
 
-    render_page('Learners', '<section class="hero"><div><p class="eyebrow">Training</p><h1>Learner records</h1><p>Each learner is now an entity with weekly logs, progress history, and attendance trends.</p></div><a class="button-link" href="/admin/lookups">Add learner</a></section>
-    <section class="panel"><table><thead><tr><th>Learner</th><th>Status</th><th>Logs</th><th>Avg attendance</th><th>Avg progress</th><th>Latest week</th><th>Attendance RAG</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    render_page('Learners', '<section class="hero"><div><p class="eyebrow">Training</p><h1>Learner records</h1><p>Each learner is an entity with weekly logs, progress history, attendance trends, and a lifecycle status.</p></div></section>
+    ' . learner_form() . '
+    <section class="panel"><table><thead><tr><th>Learner</th><th>Status</th><th>Logs</th><th>Avg attendance</th><th>Avg progress</th><th>Latest week</th><th>Attendance RAG</th>' . ($canManage ? '<th>Status</th><th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
+}
+
+function learner_form(): string
+{
+    if (!can_access('training', true)) {
+        return '';
+    }
+
+    return '<section class="panel"><h2>Add learner</h2><form class="grid-form" method="post" action="/learners">' . csrf_field() . '
+        <label>Name<input name="name" required></label>
+        <label>Status<select name="status">' . learner_status_options('Active') . '</select></label>
+        <label>Start date<input type="date" name="start_date"></label>
+        <label class="span-2">Notes<textarea name="notes"></textarea></label>
+        <button type="submit">Add learner</button>
+    </form></section>';
+}
+
+function store_learner(): void
+{
+    require_area('training', true);
+    require_learners_ready();
+    $name = trim((string) ($_POST['name'] ?? ''));
+    $status = (string) ($_POST['status'] ?? 'Active');
+    if ($name === '' || !in_array($status, ['Active', 'Paused', 'Completed', 'Withdrawn'], true)) {
+        flash('Learner name and status are required.');
+        redirect('/learners');
+    }
+
+    execute_sql(
+        'INSERT INTO learners (name, status, start_date, notes) VALUES (?, ?, ?, ?)',
+        [$name, $status, $_POST['start_date'] ?: null, trim((string) ($_POST['notes'] ?? '')) ?: null]
+    );
+    flash('Learner added.');
+    redirect('/learners');
+}
+
+function update_learner_status(): void
+{
+    require_area('training', true);
+    require_learners_ready();
+    $status = (string) ($_POST['status'] ?? 'Active');
+    if (!in_array($status, ['Active', 'Paused', 'Completed', 'Withdrawn'], true)) {
+        flash('Invalid learner status.');
+        redirect('/learners');
+    }
+
+    execute_sql('UPDATE learners SET status = ? WHERE id = ?', [$status, (int) ($_POST['id'] ?? 0)]);
+    flash('Learner status updated.');
+    redirect('/learners');
+}
+
+function delete_learner(): void
+{
+    require_area('training', true);
+    require_learners_ready();
+    $learnerId = (int) ($_POST['id'] ?? 0);
+    $logCount = (int) (query_one('SELECT COUNT(*) AS total FROM training_submissions WHERE learner_id = ?', [$learnerId])['total'] ?? 0);
+
+    if ($logCount > 0) {
+        execute_sql('UPDATE learners SET status = ? WHERE id = ?', ['Withdrawn', $learnerId]);
+        flash('Learner has existing logs, so they were archived as Withdrawn rather than deleted.');
+    } else {
+        execute_sql('DELETE FROM learners WHERE id = ?', [$learnerId]);
+        flash('Learner removed.');
+    }
+
+    redirect('/learners');
 }
 
 function show_learner_record(): void
