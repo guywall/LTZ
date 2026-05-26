@@ -12,18 +12,37 @@ Custom PHP + MySQL web app for the LTZ weekly cadence workflow that was original
 - Risk register, action tracker, target editing, lookup editing, and user creation.
 - MySQL schema and seed data from the workbook.
 
-## VPS install
+## Plesk web install
 
-Upload this project folder to the VPS, then run the installer from the project root:
+This is the simplest install path for Plesk, where Nginx, MySQL, and PHP-FPM already exist.
+
+1. In Plesk, create a MySQL database and database user.
+2. Upload the project files to the domain.
+3. Set the domain document root to the `public` folder.
+4. Visit:
+
+```
+https://yourdomain.com/setup.php
+```
+
+5. Enter the Plesk database host, database name, user, and password.
+6. Leave "Install seed data" ticked for the starter users and workbook sample data.
+7. Submit the form.
+
+The setup page will create the tables, import the seed data, write `config/config.php`, and lock itself with `config/installed.lock`.
+
+If the setup page says the `config` directory is not writable, adjust permissions in Plesk File Manager for the setup step, then restore tighter permissions after install.
+
+## SSH VPS install
+
+If you are not using Plesk and want a command-line installer, upload this project folder to the VPS and run from the project root:
 
 ```bash
 chmod +x deploy/install-vps.sh
 sudo DOMAIN=yourdomain.com CONFIGURE_NGINX=yes INSTALL_PACKAGES=yes deploy/install-vps.sh
 ```
 
-The installer creates the MySQL database/user, imports `database/schema.sql`, imports `database/seed.sql`, writes `config/config.php`, sets file permissions, and can create the Nginx site.
-
-Useful installer options:
+Useful SSH installer options:
 
 ```bash
 sudo DB_NAME=ltz DB_USER=ltz_app DB_PASS='strong-password' deploy/install-vps.sh

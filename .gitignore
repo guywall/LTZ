@@ -1,7 +1,7 @@
 /config/config.php
+/config/installed.lock
 /.env
 /vendor/
 /node_modules/
 /.idea/
 /.vscode/
-

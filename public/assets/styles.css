@@ -317,7 +317,8 @@ th {
     padding: 24px;
 }
 
-.login-card {
+.login-card,
+.setup-card {
     background: #fff;
     border: 1px solid var(--line);
     border-radius: 8px;
@@ -328,13 +329,50 @@ th {
     width: 100%;
 }
 
+.setup-shell {
+    padding: 32px 20px;
+}
+
+.setup-card {
+    max-width: 620px;
+}
+
 .login-card h1 {
     margin: 0 0 22px;
 }
 
-.login-card form {
+.login-card form,
+.setup-form {
     display: grid;
     gap: 14px;
+}
+
+.check-row {
+    align-items: center;
+    color: var(--text);
+    display: flex;
+    gap: 10px;
+}
+
+.check-row input {
+    margin: 0;
+    width: auto;
+}
+
+.button-link {
+    align-items: center;
+    background: var(--primary);
+    border-radius: 6px;
+    color: #fff;
+    display: inline-flex;
+    font-weight: 800;
+    min-height: 42px;
+    padding: 0 16px;
+}
+
+.button-link:hover {
+    background: var(--primary-dark);
+    color: #fff;
 }
 
 @media (max-width: 960px) {
@@ -360,4 +398,3 @@ th {
         grid-column: span 1;
     }
 }
-
