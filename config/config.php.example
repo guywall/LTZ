@@ -1,0 +1,11 @@
+<?php
+
+return [
+    'app_name' => 'LTZ Operational Intelligence',
+    'db_host' => getenv('DB_HOST') ?: '127.0.0.1',
+    'db_port' => getenv('DB_PORT') ?: '3306',
+    'db_name' => getenv('DB_NAME') ?: 'ltz_operational_intelligence',
+    'db_user' => getenv('DB_USER') ?: 'ltz_app',
+    'db_pass' => getenv('DB_PASS') ?: 'change-me',
+];
+
