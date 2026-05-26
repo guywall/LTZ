@@ -1,0 +1,10 @@
+Options -Indexes
+RewriteEngine On
+
+# Support Plesk domains where the document root is the project root.
+RewriteRule ^assets/(.*)$ public/assets/$1 [L]
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ public/index.php [QSA,L]
+
