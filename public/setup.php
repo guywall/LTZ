@@ -141,13 +141,20 @@ function setup_write_config(string $configFile, array $data): void
 
 function setup_render(string $title, string $body): void
 {
+    $publicBase = defined('LTZ_PUBLIC_BASE')
+        ? (string) LTZ_PUBLIC_BASE
+        : rtrim(str_replace('\\', '/', dirname((string) ($_SERVER['SCRIPT_NAME'] ?? ''))), '/');
+    if ($publicBase === '/' || $publicBase === '.') {
+        $publicBase = '';
+    }
+
     echo '<!doctype html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>' . setup_e($title) . ' | LTZ Setup</title>
-    <link rel="stylesheet" href="/assets/styles.css">
+    <link rel="stylesheet" href="' . setup_e($publicBase) . '/assets/styles.css">
 </head>
 <body>
 <main class="setup-shell">
@@ -158,12 +165,13 @@ function setup_render(string $title, string $body): void
 }
 
 if (is_file($lockFile)) {
+    $loginHref = (defined('LTZ_PUBLIC_BASE') ? (string) LTZ_PUBLIC_BASE : rtrim(str_replace('\\', '/', dirname((string) ($_SERVER['SCRIPT_NAME'] ?? ''))), '/')) . '/login';
     setup_render('Already installed', '<section class="setup-card">
         <p class="eyebrow">Setup locked</p>
         <h1>LTZ is already installed</h1>
         <p>The installer is disabled because <code>config/installed.lock</code> exists.</p>
         <p>Delete that lock file from Plesk File Manager only if you intentionally need to reinstall.</p>
-        <a class="button-link" href="/login">Go to login</a>
+        <a class="button-link" href="' . setup_e($loginHref) . '">Go to login</a>
     </section>');
     exit;
 }
@@ -241,6 +249,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 if ($success) {
+    $loginHref = (defined('LTZ_PUBLIC_BASE') ? (string) LTZ_PUBLIC_BASE : rtrim(str_replace('\\', '/', dirname((string) ($_SERVER['SCRIPT_NAME'] ?? ''))), '/')) . '/login';
     $items = '';
     foreach ($summary as $item) {
         $items .= '<li>' . setup_e($item) . '</li>';
@@ -251,7 +260,7 @@ if ($success) {
         <h1>LTZ is installed</h1>
         <ul class="compact-list">' . $items . '</ul>
         <p>Seed login password: <code>ChangeMe123!</code>. Change the seed passwords before client use.</p>
-        <a class="button-link" href="/login">Go to login</a>
+        <a class="button-link" href="' . setup_e($loginHref) . '">Go to login</a>
     </section>');
     exit;
 }
@@ -270,7 +279,7 @@ setup_render('Setup', '<section class="setup-card">
     <h1>Install LTZ Operational Intelligence</h1>
     <p class="muted">Create a MySQL database in Plesk first, then enter those credentials here. If the database user has permission, the installer can also create the database name below.</p>
     ' . $errorHtml . '
-    <form class="setup-form" method="post" action="/setup.php">
+    <form class="setup-form" method="post" action="' . setup_e((string) ($_SERVER['REQUEST_URI'] ?? $_SERVER['SCRIPT_NAME'] ?? '/setup.php')) . '">
         <label>Database host<input name="host" value="' . setup_e($_POST['host'] ?? 'localhost') . '" required></label>
         <label>Database port<input name="port" value="' . setup_e($_POST['port'] ?? '3306') . '" required></label>
         <label>Database name<input name="database" value="' . setup_e($_POST['database'] ?? 'ltz_operational_intelligence') . '" required></label>
@@ -283,4 +292,3 @@ setup_render('Setup', '<section class="setup-card">
     </form>
     <p class="muted">After installation this setup page locks itself with <code>config/installed.lock</code>.</p>
 </section>');
-
