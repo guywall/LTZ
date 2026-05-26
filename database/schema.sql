@@ -92,10 +92,21 @@ CREATE TABLE weekly_barber_submissions (
     CONSTRAINT fk_wbs_user FOREIGN KEY (submitted_by) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE learners (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(140) NOT NULL UNIQUE,
+    status ENUM('Active', 'Paused', 'Completed', 'Withdrawn') NOT NULL DEFAULT 'Active',
+    start_date DATE NULL,
+    notes TEXT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE training_submissions (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     week_start DATE NOT NULL,
-    learner VARCHAR(140) NOT NULL,
+    learner_id INT UNSIGNED NULL,
+    learner VARCHAR(140) NULL,
     attendance_pct DECIMAL(6,4) NOT NULL DEFAULT 0,
     progress_pct DECIMAL(6,4) NOT NULL DEFAULT 0,
     epa_readiness VARCHAR(80) NOT NULL,
@@ -104,6 +115,8 @@ CREATE TABLE training_submissions (
     submitted_by INT UNSIGNED NOT NULL,
     submitted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_training_week (week_start),
+    INDEX idx_training_learner (learner_id),
+    CONSTRAINT fk_training_learner FOREIGN KEY (learner_id) REFERENCES learners(id),
     CONSTRAINT fk_training_user FOREIGN KEY (submitted_by) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -183,4 +196,3 @@ CREATE TABLE audit_log (
     INDEX idx_audit_user (user_id),
     CONSTRAINT fk_audit_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-

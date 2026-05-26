@@ -233,6 +233,8 @@ function handle_request(): void
         '/training' => show_training(),
         '/social' => show_social(),
         '/hr' => show_hr(),
+        '/learners' => show_learners(),
+        '/learners/view' => show_learner_record(),
         '/leadership' => show_leadership(),
         '/strategy' => show_strategy(),
         '/risks' => show_risks(),
@@ -255,7 +257,9 @@ function handle_post(string $path): void
         '/hr' => store_hr_submission(),
         '/risks' => store_risk(),
         '/actions' => store_action(),
+        '/profile' => change_own_password(),
         '/admin/users' => store_user(),
+        '/admin/users/reset-password' => reset_user_password(),
         '/admin/lookups' => store_lookup(),
         '/admin/targets' => update_targets(),
         default => show_not_found(),
@@ -350,6 +354,7 @@ function navigation(): string
         ['/dashboard', 'Dashboard', 'dashboard'],
         ['/barbers', 'Barbers', 'barbers'],
         ['/training', 'Training', 'training'],
+        ['/learners', 'Learners', 'training'],
         ['/social', 'Social', 'social'],
         ['/hr', 'HR', 'hr'],
         ['/leadership', 'Leadership', 'leadership'],
@@ -408,7 +413,7 @@ function week_filter(string $basePath): string
 
 function lookup_options(string $table, ?int $selected = null): string
 {
-    $allowed = ['sites', 'barbers', 'brands', 'recruitment_roles', 'users'];
+    $allowed = ['sites', 'barbers', 'brands', 'learners', 'recruitment_roles', 'users'];
     if (!in_array($table, $allowed, true)) {
         return '';
     }
@@ -573,7 +578,7 @@ function show_training_dashboard(): void
     require_area('training');
     $week = selected_week();
     $targets = targets_for_kpi();
-    $rows = query_all('SELECT * FROM training_submissions WHERE week_start = ? ORDER BY learner', [$week]);
+    $rows = training_rows($week);
     $count = count($rows);
     $avgAttendance = average_value(array_column($rows, 'attendance_pct'));
     $avgProgress = average_value(array_column($rows, 'progress_pct'));
@@ -592,17 +597,17 @@ function show_training_dashboard(): void
     foreach ($rows as $row) {
         $rag = training_rag((float) $row['attendance_pct'], (int) $row['safeguarding_flags'], $targets);
         if ($rag['overall_rag'] === RAG_GREEN) {
-            $strong[] = $row['learner'] . ' is on track with ' . pct($row['attendance_pct']) . ' attendance and no safeguarding flags.';
+            $strong[] = $row['learner_name'] . ' is on track with ' . pct($row['attendance_pct']) . ' attendance and no safeguarding flags.';
         } else {
-            $attention[] = $row['learner'] . ' needs focus: attendance ' . $rag['attendance_rag'] . ', safeguarding ' . $rag['safeguarding_rag'] . '.';
+            $attention[] = $row['learner_name'] . ' needs focus: attendance ' . $rag['attendance_rag'] . ', safeguarding ' . $rag['safeguarding_rag'] . '.';
         }
-        $body .= '<tr><td>' . e($row['learner']) . '</td><td>' . pct($row['attendance_pct']) . '</td><td>' . pct($row['progress_pct']) . '</td><td>' . e($row['epa_readiness']) . '</td><td>' . (int) $row['safeguarding_flags'] . '</td><td>' . badge($rag['attendance_rag']) . '</td><td>' . badge($rag['safeguarding_rag']) . '</td><td>' . badge($rag['overall_rag']) . '</td></tr>';
+        $body .= '<tr><td><a href="/learners/view?id=' . (int) $row['learner_id'] . '">' . e($row['learner_name']) . '</a></td><td>' . pct($row['attendance_pct']) . '</td><td>' . pct($row['progress_pct']) . '</td><td>' . e($row['epa_readiness']) . '</td><td>' . (int) $row['safeguarding_flags'] . '</td><td>' . badge($rag['attendance_rag']) . '</td><td>' . badge($rag['safeguarding_rag']) . '</td><td>' . badge($rag['overall_rag']) . '</td></tr>';
     }
 
     render_page('Training Dashboard', '<section class="hero"><div><p class="eyebrow">Training dashboard</p><h1>Learner health</h1><p>Attendance, progress, EPA readiness, and safeguarding pressure for the selected week.</p></div>' . week_filter('/dashboard') . '</section>
     <section class="metric-grid">' . $cards . '</section>
     <div class="two-col">' . insight_panel('Performing strongly', $strong, 'No learners are green overall yet for this week.') . insight_panel('Areas to improve', $attention, 'No learner interventions highlighted this week.') . '</div>
-    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><a href="/training?week=' . e($week) . '">Add or review submissions</a></div><table><thead><tr><th>Learner</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>Attendance RAG</th><th>Safeguarding RAG</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><span><a href="/learners">Learner records</a> · <a href="/training?week=' . e($week) . '">Add or review submissions</a></span></div><table><thead><tr><th>Learner</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>Attendance RAG</th><th>Safeguarding RAG</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function show_social_dashboard(): void
@@ -684,7 +689,7 @@ function executive_metrics(string $week, array $targets): array
 {
     $weeklyRtb = (float) (query_one('SELECT COALESCE(SUM(rtb_cash + rtb_card), 0) AS total FROM weekly_barber_submissions WHERE week_start = ?', [$week])['total'] ?? 0);
     $occupied = (int) (query_one('SELECT COUNT(*) AS total FROM weekly_barber_submissions WHERE week_start = ? AND (rtb_cash + rtb_card) > 0', [$week])['total'] ?? 0);
-    $learners = (int) (query_one('SELECT COUNT(*) AS total FROM training_submissions WHERE week_start = ?', [$week])['total'] ?? 0);
+    $learners = (int) (query_one('SELECT COUNT(DISTINCT learner_id) AS total FROM training_submissions WHERE week_start = ? AND learner_id IS NOT NULL', [$week])['total'] ?? 0);
     $socialLeads = (int) (query_one('SELECT COALESCE(SUM(leads), 0) AS total FROM brand_submissions WHERE week_start = ?', [$week])['total'] ?? 0);
     $senior = (int) (query_one(
         'SELECT COALESCE(MAX(active_pipeline), 0) AS total
@@ -800,14 +805,27 @@ function show_training(): void
     require_area('training');
     $week = selected_week();
     $targets = targets_for_kpi();
-    $rows = query_all('SELECT t.*, u.name AS submitted_by_name FROM training_submissions t JOIN users u ON u.id = t.submitted_by WHERE t.week_start = ? ORDER BY learner', [$week]);
+    $rows = training_rows($week);
     $body = '';
     foreach ($rows as $row) {
         $rag = training_rag((float) $row['attendance_pct'], (int) $row['safeguarding_flags'], $targets);
-        $body .= '<tr><td>' . e($row['learner']) . '</td><td>' . pct($row['attendance_pct']) . '</td><td>' . pct($row['progress_pct']) . '</td><td>' . e($row['epa_readiness']) . '</td><td>' . (int) $row['safeguarding_flags'] . '</td><td>' . badge($rag['overall_rag']) . '</td></tr>';
+        $body .= '<tr><td><a href="/learners/view?id=' . (int) $row['learner_id'] . '">' . e($row['learner_name']) . '</a></td><td>' . pct($row['attendance_pct']) . '</td><td>' . pct($row['progress_pct']) . '</td><td>' . e($row['epa_readiness']) . '</td><td>' . (int) $row['safeguarding_flags'] . '</td><td>' . badge($rag['overall_rag']) . '</td></tr>';
     }
 
-    render_page('Training', '<section class="hero"><div><p class="eyebrow">Training</p><h1>Learner health</h1></div>' . week_filter('/training') . '</section>' . submission_form_training($week) . '<section class="panel"><h2>Weekly learner RAG</h2><table><thead><tr><th>Learner</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>RAG</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    render_page('Training', '<section class="hero"><div><p class="eyebrow">Training</p><h1>Learner health</h1></div>' . week_filter('/training') . '</section>' . submission_form_training($week) . '<section class="panel"><div class="panel-title"><h2>Weekly learner RAG</h2><a href="/learners">Learner records</a></div><table><thead><tr><th>Learner</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>RAG</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+}
+
+function training_rows(string $week): array
+{
+    return query_all(
+        'SELECT t.*, COALESCE(l.name, t.learner) AS learner_name, l.status AS learner_status, u.name AS submitted_by_name
+         FROM training_submissions t
+         LEFT JOIN learners l ON l.id = t.learner_id
+         JOIN users u ON u.id = t.submitted_by
+         WHERE t.week_start = ?
+         ORDER BY learner_name',
+        [$week]
+    );
 }
 
 function submission_form_training(string $week): string
@@ -818,7 +836,7 @@ function submission_form_training(string $week): string
 
     return '<section class="panel"><h2>Add training submission</h2><form class="grid-form" method="post" action="/training?week=' . e($week) . '">' . csrf_field() . '
         <label>Week<input type="date" name="week_start" value="' . e($week) . '" required></label>
-        <label>Learner<input name="learner" required></label>
+        <label>Learner<select name="learner_id" required>' . lookup_options('learners') . '</select></label>
         <label>Attendance %<input type="number" name="attendance_pct" min="0" max="100" step="0.1" required></label>
         <label>Progress %<input type="number" name="progress_pct" min="0" max="100" step="0.1" required></label>
         <label>EPA readiness<select name="epa_readiness"><option>On Track</option><option>At Risk</option><option>Not Ready</option></select></label>
@@ -832,11 +850,12 @@ function store_training_submission(): void
 {
     require_area('training', true);
     execute_sql(
-        'INSERT INTO training_submissions (week_start, learner, attendance_pct, progress_pct, epa_readiness, safeguarding_flags, risk_notes, submitted_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO training_submissions (week_start, learner_id, learner, attendance_pct, progress_pct, epa_readiness, safeguarding_flags, risk_notes, submitted_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
             $_POST['week_start'],
-            trim((string) $_POST['learner']),
+            (int) $_POST['learner_id'],
+            learner_name((int) $_POST['learner_id']),
             percentage_input_to_decimal($_POST['attendance_pct']),
             percentage_input_to_decimal($_POST['progress_pct']),
             (string) $_POST['epa_readiness'],
@@ -847,6 +866,114 @@ function store_training_submission(): void
     );
     flash('Training submission saved.');
     redirect('/training?week=' . e((string) $_POST['week_start']));
+}
+
+function learner_name(int $learnerId): string
+{
+    $row = query_one('SELECT name FROM learners WHERE id = ?', [$learnerId]);
+    return $row['name'] ?? '';
+}
+
+function show_learners(): void
+{
+    require_area('training');
+    $targets = targets_for_kpi();
+    $rows = query_all(
+        'SELECT l.*,
+            COUNT(t.id) AS log_count,
+            AVG(t.attendance_pct) AS avg_attendance,
+            AVG(t.progress_pct) AS avg_progress,
+            MAX(t.week_start) AS latest_week
+         FROM learners l
+         LEFT JOIN training_submissions t ON t.learner_id = l.id
+         GROUP BY l.id
+         ORDER BY l.status, l.name'
+    );
+
+    $body = '';
+    foreach ($rows as $row) {
+        $attendance = $row['avg_attendance'] === null ? null : (float) $row['avg_attendance'];
+        $attendanceRag = $attendance === null ? '' : badge(rag_threshold($attendance, $targets['training_attendance_target'], $targets['training_attendance_amber']));
+        $body .= '<tr><td><a href="/learners/view?id=' . (int) $row['id'] . '">' . e($row['name']) . '</a></td><td>' . e($row['status']) . '</td><td>' . (int) $row['log_count'] . '</td><td>' . ($attendance === null ? '-' : pct($attendance)) . '</td><td>' . ($row['avg_progress'] === null ? '-' : pct($row['avg_progress'])) . '</td><td>' . e($row['latest_week'] ?? '-') . '</td><td>' . $attendanceRag . '</td></tr>';
+    }
+
+    render_page('Learners', '<section class="hero"><div><p class="eyebrow">Training</p><h1>Learner records</h1><p>Each learner is now an entity with weekly logs, progress history, and attendance trends.</p></div><a class="button-link" href="/admin/lookups">Add learner</a></section>
+    <section class="panel"><table><thead><tr><th>Learner</th><th>Status</th><th>Logs</th><th>Avg attendance</th><th>Avg progress</th><th>Latest week</th><th>Attendance RAG</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+}
+
+function show_learner_record(): void
+{
+    require_area('training');
+    $learnerId = (int) ($_GET['id'] ?? 0);
+    $learner = query_one('SELECT * FROM learners WHERE id = ?', [$learnerId]);
+    if (!$learner) {
+        show_not_found();
+        return;
+    }
+
+    $targets = targets_for_kpi();
+    $logs = query_all(
+        'SELECT t.*, u.name AS submitted_by_name
+         FROM training_submissions t
+         JOIN users u ON u.id = t.submitted_by
+         WHERE t.learner_id = ?
+         ORDER BY t.week_start',
+        [$learnerId]
+    );
+    $avgAttendance = average_value(array_column($logs, 'attendance_pct'));
+    $avgProgress = average_value(array_column($logs, 'progress_pct'));
+    $flags = array_sum(array_map('intval', array_column($logs, 'safeguarding_flags')));
+    $latest = $logs ? $logs[array_key_last($logs)] : null;
+
+    $cards = card('Logs', (string) count($logs), '', '/training')
+        . card('Avg attendance', pct($avgAttendance), rag_threshold($avgAttendance, $targets['training_attendance_target'], $targets['training_attendance_amber']), '/training')
+        . card('Avg progress', pct($avgProgress), '', '/training')
+        . card('Total flags', (string) $flags, $flags === 0 ? RAG_GREEN : ($flags === 1 ? RAG_AMBER : RAG_RED), '/training')
+        . card('Latest EPA', e($latest['epa_readiness'] ?? '-'), '', '/training');
+
+    $body = '';
+    foreach ($logs as $log) {
+        $rag = training_rag((float) $log['attendance_pct'], (int) $log['safeguarding_flags'], $targets);
+        $body .= '<tr><td>' . e($log['week_start']) . '</td><td>' . pct($log['attendance_pct']) . '</td><td>' . pct($log['progress_pct']) . '</td><td>' . e($log['epa_readiness']) . '</td><td>' . (int) $log['safeguarding_flags'] . '</td><td>' . e($log['risk_notes']) . '</td><td>' . badge($rag['overall_rag']) . '</td></tr>';
+    }
+
+    render_page('Learner Record', '<section class="hero"><div><p class="eyebrow">Learner record</p><h1>' . e($learner['name']) . '</h1><p>Status: ' . e($learner['status']) . '</p></div><a class="button-link" href="/learners">All learners</a></section>
+    <section class="metric-grid">' . $cards . '</section>
+    <div class="two-col"><section class="panel"><h2>Attendance over time</h2>' . learner_chart($logs, 'attendance_pct', $targets['training_attendance_target'], $targets['training_attendance_amber']) . '</section><section class="panel"><h2>Progress over time</h2>' . learner_chart($logs, 'progress_pct', null, null) . '</section></div>
+    <section class="panel"><h2>Weekly logs</h2><table><thead><tr><th>Week</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>Risk notes</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+}
+
+function learner_chart(array $logs, string $field, ?float $target, ?float $amber): string
+{
+    if (count($logs) < 1) {
+        return '<p class="muted">No logs yet.</p>';
+    }
+
+    $width = 640;
+    $height = 220;
+    $pad = 28;
+    $maxIndex = max(count($logs) - 1, 1);
+    $points = [];
+    foreach (array_values($logs) as $index => $log) {
+        $x = $pad + ($index / $maxIndex) * ($width - ($pad * 2));
+        $y = $height - $pad - ((float) $log[$field] * ($height - ($pad * 2)));
+        $points[] = round($x, 1) . ',' . round($y, 1);
+    }
+
+    $thresholds = '';
+    foreach ([['value' => $target, 'class' => 'target'], ['value' => $amber, 'class' => 'amber-line']] as $line) {
+        if ($line['value'] !== null) {
+            $y = $height - $pad - ((float) $line['value'] * ($height - ($pad * 2)));
+            $thresholds .= '<line class="' . e($line['class']) . '" x1="' . $pad . '" y1="' . round($y, 1) . '" x2="' . ($width - $pad) . '" y2="' . round($y, 1) . '"></line>';
+        }
+    }
+
+    return '<svg class="learner-chart" viewBox="0 0 ' . $width . ' ' . $height . '" role="img" aria-label="' . e($field) . ' chart">
+        <line class="axis" x1="' . $pad . '" y1="' . ($height - $pad) . '" x2="' . ($width - $pad) . '" y2="' . ($height - $pad) . '"></line>
+        <line class="axis" x1="' . $pad . '" y1="' . $pad . '" x2="' . $pad . '" y2="' . ($height - $pad) . '"></line>
+        ' . $thresholds . '
+        <polyline class="trend" points="' . e(implode(' ', $points)) . '"></polyline>
+    </svg>';
 }
 
 function show_social(): void
@@ -1143,7 +1270,50 @@ function show_submissions(): void
 function show_profile(): void
 {
     $user = current_user();
-    render_page('Profile', '<section class="panel"><h1>Profile</h1><p><strong>' . e($user['name']) . '</strong></p><p>' . e($user['email']) . '</p><p>' . e($user['role_name']) . '</p></section>');
+    render_page('Profile', '<section class="panel"><h1>Profile</h1><p><strong>' . e($user['name']) . '</strong></p><p>' . e($user['email']) . '</p><p>' . e($user['role_name']) . '</p></section>
+    <section class="panel"><h2>Change password</h2><form class="grid-form" method="post" action="/profile">' . csrf_field() . '
+        <label>Current password<input type="password" name="current_password" required autocomplete="current-password"></label>
+        <label>New password<input type="password" name="new_password" minlength="10" required autocomplete="new-password"></label>
+        <label>Confirm new password<input type="password" name="confirm_password" minlength="10" required autocomplete="new-password"></label>
+        <button type="submit">Change password</button>
+    </form><p class="muted">Passwords are changed inside the app. No email address is required.</p></section>');
+}
+
+function validate_new_password(string $password, string $confirm): ?string
+{
+    if ($password !== $confirm) {
+        return 'The new passwords do not match.';
+    }
+
+    if (strlen($password) < 10) {
+        return 'The new password must be at least 10 characters.';
+    }
+
+    return null;
+}
+
+function change_own_password(): void
+{
+    $user = current_user();
+    $currentPassword = (string) ($_POST['current_password'] ?? '');
+    $newPassword = (string) ($_POST['new_password'] ?? '');
+    $confirmPassword = (string) ($_POST['confirm_password'] ?? '');
+
+    if (!password_verify($currentPassword, (string) $user['password_hash'])) {
+        flash('Current password was not recognised.');
+        redirect('/profile');
+    }
+
+    $error = validate_new_password($newPassword, $confirmPassword);
+    if ($error !== null) {
+        flash($error);
+        redirect('/profile');
+    }
+
+    execute_sql('UPDATE users SET password_hash = ? WHERE id = ?', [password_hash($newPassword, PASSWORD_DEFAULT), (int) $user['id']]);
+    session_regenerate_id(true);
+    flash('Password changed.');
+    redirect('/profile');
 }
 
 function show_admin_users(): void
@@ -1157,7 +1327,7 @@ function show_admin_users(): void
     }
     $body = '';
     foreach ($rows as $row) {
-        $body .= '<tr><td>' . e($row['name']) . '</td><td>' . e($row['email']) . '</td><td>' . e($row['role_name']) . '</td><td>' . ((int) $row['active'] ? 'Active' : 'Inactive') . '</td></tr>';
+        $body .= '<tr><td>' . e($row['name']) . '</td><td>' . e($row['email']) . '</td><td>' . e($row['role_name']) . '</td><td>' . ((int) $row['active'] ? 'Active' : 'Inactive') . '</td><td><form class="table-form" method="post" action="/admin/users/reset-password">' . csrf_field() . '<input type="hidden" name="user_id" value="' . (int) $row['id'] . '"><input type="password" name="new_password" placeholder="New password" minlength="10" required><input type="password" name="confirm_password" placeholder="Confirm" minlength="10" required><button type="submit">Reset</button></form></td></tr>';
     }
 
     render_page('Admin Users', '<section class="hero"><div><p class="eyebrow">Admin</p><h1>Users</h1></div><div class="admin-links"><a href="/admin/lookups">Lookups</a><a href="/admin/targets">Targets</a></div></section>
@@ -1168,7 +1338,7 @@ function show_admin_users(): void
         <label>Password<input type="password" name="password" required></label>
         <button type="submit">Create user</button>
     </form></section>
-    <section class="panel"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    <section class="panel"><h2>Reset passwords</h2><p class="muted">Use direct resets here because the seed email addresses are placeholders and no email delivery is assumed.</p><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Set password</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function store_user(): void
@@ -1191,6 +1361,30 @@ function store_user(): void
         execute_sql('INSERT INTO user_permissions (user_id, area, can_read, can_write) VALUES (?, ?, 1, 1)', [$userId, $area]);
     }
     flash('User created.');
+    redirect('/admin/users');
+}
+
+function reset_user_password(): void
+{
+    require_area('admin', true);
+    $userId = (int) ($_POST['user_id'] ?? 0);
+    $newPassword = (string) ($_POST['new_password'] ?? '');
+    $confirmPassword = (string) ($_POST['confirm_password'] ?? '');
+
+    $target = query_one('SELECT id, name FROM users WHERE id = ?', [$userId]);
+    if (!$target) {
+        flash('User not found.');
+        redirect('/admin/users');
+    }
+
+    $error = validate_new_password($newPassword, $confirmPassword);
+    if ($error !== null) {
+        flash($error);
+        redirect('/admin/users');
+    }
+
+    execute_sql('UPDATE users SET password_hash = ? WHERE id = ?', [password_hash($newPassword, PASSWORD_DEFAULT), $userId]);
+    flash('Password reset for ' . $target['name'] . '.');
     redirect('/admin/users');
 }
 
@@ -1222,7 +1416,7 @@ function show_admin_lookups(): void
 {
     require_area('admin');
     $sections = '';
-    foreach (['sites' => 'Site', 'barbers' => 'Barber', 'brands' => 'Brand', 'recruitment_roles' => 'Recruitment role'] as $table => $label) {
+    foreach (['sites' => 'Site', 'barbers' => 'Barber', 'brands' => 'Brand', 'learners' => 'Learner', 'recruitment_roles' => 'Recruitment role'] as $table => $label) {
         $rows = query_all("SELECT name FROM {$table} ORDER BY name");
         $list = implode('', array_map(fn($row) => '<li>' . e($row['name']) . '</li>', $rows));
         $sections .= '<section class="panel"><h2>' . e($label) . 's</h2><ul class="compact-list">' . $list . '</ul><form class="inline-form" method="post" action="/admin/lookups">' . csrf_field() . '<input type="hidden" name="table" value="' . e($table) . '"><input name="name" placeholder="New ' . e(strtolower($label)) . '" required><button type="submit">Add</button></form></section>';
@@ -1235,7 +1429,7 @@ function store_lookup(): void
 {
     require_area('admin', true);
     $table = (string) $_POST['table'];
-    if (!in_array($table, ['sites', 'barbers', 'brands', 'recruitment_roles'], true)) {
+    if (!in_array($table, ['sites', 'barbers', 'brands', 'learners', 'recruitment_roles'], true)) {
         http_response_code(400);
         exit('Invalid lookup table.');
     }

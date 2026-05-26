@@ -69,6 +69,10 @@ INSERT INTO targets (kpi_key, area, kpi, target_value, amber_threshold, red_thre
 ('strategy_social_leads', '5x5', 'Social Leads', 60, 40, 29, 'count', 'Combined brand lead target'),
 ('strategy_senior_pipeline', '5x5', 'Senior Barber Pipeline', 3, 2, 1, 'count', 'Minimum active senior candidates');
 
+INSERT INTO learners (name, status, notes) VALUES
+('Learner 1', 'Active', NULL),
+('Learner 2', 'Active', 'Attendance intervention required');
+
 INSERT INTO weekly_barber_submissions (week_start, site_id, barber_id, rtb_cash, rtb_card, total_sales, days_worked, rebooking_pct, utilisation_pct, notes, submitted_by) VALUES
 ('2026-05-18', (SELECT id FROM sites WHERE name = 'Soresby'), (SELECT id FROM barbers WHERE name = 'Alex'), 50, 50, 200, 5, 0.50, 0.50, 'TEST', (SELECT id FROM users WHERE email = 'mario@ltz.local')),
 ('2026-05-18', (SELECT id FROM sites WHERE name = 'Soresby'), (SELECT id FROM barbers WHERE name = 'Lewis'), 70, 60, 130, 6, 0.30, 0.40, 'test', (SELECT id FROM users WHERE email = 'cosmin@ltz.local')),
@@ -77,9 +81,9 @@ INSERT INTO weekly_barber_submissions (week_start, site_id, barber_id, rtb_cash,
 ('2026-05-18', (SELECT id FROM sites WHERE name = 'Woodseats'), (SELECT id FROM barbers WHERE name = 'Brendan'), 250, 250, 500, 5, 0.81, 0.78, NULL, (SELECT id FROM users WHERE email = 'cosmin@ltz.local')),
 ('2026-05-18', (SELECT id FROM sites WHERE name = 'Clay Cross'), (SELECT id FROM barbers WHERE name = 'Rossco'), 80, 70, 300, 2, 0.45, 0.55, NULL, (SELECT id FROM users WHERE email = 'cosmin@ltz.local'));
 
-INSERT INTO training_submissions (week_start, learner, attendance_pct, progress_pct, epa_readiness, safeguarding_flags, risk_notes, submitted_by) VALUES
-('2026-05-18', 'Learner 1', 0.92, 0.70, 'On Track', 0, NULL, (SELECT id FROM users WHERE email = 'ravi@ltz.local')),
-('2026-05-18', 'Learner 2', 0.78, 0.45, 'At Risk', 1, 'Attendance intervention required', (SELECT id FROM users WHERE email = 'ravi@ltz.local'));
+INSERT INTO training_submissions (week_start, learner_id, learner, attendance_pct, progress_pct, epa_readiness, safeguarding_flags, risk_notes, submitted_by) VALUES
+('2026-05-18', (SELECT id FROM learners WHERE name = 'Learner 1'), 'Learner 1', 0.92, 0.70, 'On Track', 0, NULL, (SELECT id FROM users WHERE email = 'ravi@ltz.local')),
+('2026-05-18', (SELECT id FROM learners WHERE name = 'Learner 2'), 'Learner 2', 0.78, 0.45, 'At Risk', 1, 'Attendance intervention required', (SELECT id FROM users WHERE email = 'ravi@ltz.local'));
 
 INSERT INTO brand_submissions (week_start, brand_id, posts, reels, reach, engagement, leads, follow_ups, conversion_pct, notes, submitted_by) VALUES
 ('2026-05-18', (SELECT id FROM brands WHERE name = 'LTZ Barbers'), 3, 1, 1200, 95, 4, 3, 0.75, NULL, (SELECT id FROM users WHERE email = 'mario@ltz.local')),
@@ -97,4 +101,3 @@ INSERT INTO risk_register (week_start, trigger_label, risk, owner_user_id, prior
 
 INSERT INTO action_tracker (week_start, owner_user_id, action, due_date, status, priority, linked_area, notes) VALUES
 ('2026-05-18', (SELECT id FROM users WHERE email = 'cosmin@ltz.local'), 'Review Woodseats rebooking decline', '2026-05-23', 'Open', 'High', 'Operations', NULL);
-

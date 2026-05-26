@@ -270,6 +270,17 @@ th {
     gap: 10px;
 }
 
+.table-form {
+    align-items: center;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(130px, 1fr) minmax(110px, 1fr) auto;
+}
+
+.table-form input {
+    margin-top: 0;
+}
+
 .grid-form {
     display: grid;
     gap: 14px;
@@ -405,6 +416,37 @@ th {
 .button-link:hover {
     background: var(--primary-dark);
     color: #fff;
+}
+
+.learner-chart {
+    height: auto;
+    max-width: 100%;
+    width: 100%;
+}
+
+.learner-chart .axis {
+    stroke: #a8b5bf;
+    stroke-width: 1.5;
+}
+
+.learner-chart .target {
+    stroke: #15803d;
+    stroke-dasharray: 6 5;
+    stroke-width: 1.5;
+}
+
+.learner-chart .amber-line {
+    stroke: #b7791f;
+    stroke-dasharray: 4 5;
+    stroke-width: 1.5;
+}
+
+.learner-chart .trend {
+    fill: none;
+    stroke: var(--primary);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 4;
 }
 
 @media (max-width: 960px) {
