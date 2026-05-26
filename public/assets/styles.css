@@ -309,6 +309,21 @@ th {
     padding-left: 20px;
 }
 
+.insight-panel {
+    margin-top: 0;
+}
+
+.insight-list {
+    display: grid;
+    gap: 10px;
+    margin: 12px 0 0;
+    padding-left: 20px;
+}
+
+.insight-list li {
+    padding-right: 10px;
+}
+
 .notice,
 .alert {
     border-radius: 8px;

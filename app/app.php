@@ -455,6 +455,31 @@ function card(string $label, string $value, string $rag = '', string $href = '')
 
 function show_dashboard(): void
 {
+    $user = current_user();
+    if ($user && (int) $user['is_admin'] !== 1 && (int) $user['is_shareholder'] !== 1) {
+        if (can_access('barbers')) {
+            show_barber_dashboard();
+            return;
+        }
+        if (can_access('training')) {
+            show_training_dashboard();
+            return;
+        }
+        if (can_access('social')) {
+            show_social_dashboard();
+            return;
+        }
+        if (can_access('hr')) {
+            show_hr_dashboard();
+            return;
+        }
+    }
+
+    show_executive_dashboard();
+}
+
+function show_executive_dashboard(): void
+{
     $week = selected_week();
     $targets = targets_for_kpi();
     $metrics = executive_metrics($week, $targets);
@@ -482,6 +507,177 @@ function show_dashboard(): void
     <section class="panel"><div class="panel-title"><h2>Leadership RAG</h2><a href="/leadership?week=' . e($week) . '">Open leadership view</a></div>
         <table><thead><tr><th>Leader</th><th>Area</th><th>Overall</th><th>Open risks</th><th>Open actions</th></tr></thead><tbody>' . $rows . '</tbody></table>
     </section>');
+}
+
+function average_value(array $values): float
+{
+    $values = array_map('floatval', $values);
+    return count($values) ? array_sum($values) / count($values) : 0.0;
+}
+
+function insight_panel(string $title, array $items, string $empty): string
+{
+    $list = '';
+    foreach ($items as $item) {
+        $list .= '<li>' . e($item) . '</li>';
+    }
+
+    if ($list === '') {
+        $list = '<li class="muted">' . e($empty) . '</li>';
+    }
+
+    return '<section class="panel insight-panel"><h2>' . e($title) . '</h2><ul class="insight-list">' . $list . '</ul></section>';
+}
+
+function show_barber_dashboard(): void
+{
+    require_area('barbers');
+    $week = selected_week();
+    $targets = targets_for_kpi();
+    $rows = barber_rows($week, $targets);
+    $count = count($rows);
+    $totalRtb = array_sum(array_column($rows, 'rtb'));
+    $avgRtb = $count ? $totalRtb / $count : 0;
+    $avgDays = average_value(array_column($rows, 'days_worked'));
+    $avgRebooking = average_value(array_column($rows, 'rebooking_pct'));
+    $avgUtilisation = average_value(array_column($rows, 'utilisation_pct'));
+    $occupied = count(array_filter($rows, fn(array $row): bool => (float) $row['rtb'] > 0));
+
+    $cards = card('Weekly RTB', money($totalRtb), rag_threshold($avgRtb, $targets['barber_rtb_target'], $targets['barber_rtb_amber']), '/barbers?week=' . rawurlencode($week))
+        . card('Occupied chairs', (string) $occupied, '', '/barbers?week=' . rawurlencode($week))
+        . card('Avg RTB / barber', money($avgRtb), rag_threshold($avgRtb, $targets['barber_rtb_target'], $targets['barber_rtb_amber']), '/barbers?week=' . rawurlencode($week))
+        . card('Avg days worked', number_format($avgDays, 1), rag_threshold($avgDays, $targets['barber_days_target'], $targets['barber_days_amber']), '/barbers?week=' . rawurlencode($week))
+        . card('Avg rebooking', pct($avgRebooking), rag_threshold($avgRebooking, $targets['barber_rebooking_target'], $targets['barber_rebooking_amber']), '/barbers?week=' . rawurlencode($week))
+        . card('Avg utilisation', pct($avgUtilisation), rag_threshold($avgUtilisation, $targets['barber_utilisation_target'], $targets['barber_utilisation_amber']), '/barbers?week=' . rawurlencode($week));
+
+    $strong = [];
+    $attention = [];
+    $body = '';
+    foreach ($rows as $row) {
+        if ($row['overall_rag'] === RAG_GREEN) {
+            $strong[] = $row['barber'] . ' is green overall at ' . money($row['rtb']) . ' RTB across ' . $row['days_worked'] . ' days.';
+        } else {
+            $attention[] = $row['barber'] . ' needs focus: RTB ' . $row['rtb_rag'] . ', days ' . $row['days_rag'] . ', overall ' . $row['overall_rag'] . '.';
+        }
+        $body .= '<tr><td>' . e($row['site']) . '</td><td>' . e($row['barber']) . '</td><td>' . money($row['rtb']) . '</td><td>' . e($row['days_worked']) . '</td><td>' . badge($row['rtb_rag']) . '</td><td>' . badge($row['days_rag']) . '</td><td>' . badge($row['overall_rag']) . '</td></tr>';
+    }
+
+    render_page('Barber Dashboard', '<section class="hero"><div><p class="eyebrow">Operations dashboard</p><h1>Barber weekly performance</h1><p>RTB, chair occupancy, days worked, rebooking, and utilisation for the selected week.</p></div>' . week_filter('/dashboard') . '</section>
+    <section class="metric-grid">' . $cards . '</section>
+    <div class="two-col">' . insight_panel('Performing strongly', $strong, 'No green barber performance yet for this week.') . insight_panel('Areas to improve', $attention, 'No amber or red barber performance this week.') . '</div>
+    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><a href="/barbers?week=' . e($week) . '">Add or review submissions</a></div><table><thead><tr><th>Site</th><th>Barber</th><th>RTB</th><th>Days</th><th>RTB RAG</th><th>Days RAG</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+}
+
+function show_training_dashboard(): void
+{
+    require_area('training');
+    $week = selected_week();
+    $targets = targets_for_kpi();
+    $rows = query_all('SELECT * FROM training_submissions WHERE week_start = ? ORDER BY learner', [$week]);
+    $count = count($rows);
+    $avgAttendance = average_value(array_column($rows, 'attendance_pct'));
+    $avgProgress = average_value(array_column($rows, 'progress_pct'));
+    $flags = array_sum(array_map('intval', array_column($rows, 'safeguarding_flags')));
+    $attendanceRag = rag_threshold($avgAttendance, $targets['training_attendance_target'], $targets['training_attendance_amber']);
+    $safeguardingRag = $flags === 0 ? RAG_GREEN : ($flags === 1 ? RAG_AMBER : RAG_RED);
+
+    $cards = card('Active learners', (string) $count, '', '/training?week=' . rawurlencode($week))
+        . card('Avg attendance', pct($avgAttendance), $attendanceRag, '/training?week=' . rawurlencode($week))
+        . card('Avg progress', pct($avgProgress), '', '/training?week=' . rawurlencode($week))
+        . card('Safeguarding flags', (string) $flags, $safeguardingRag, '/training?week=' . rawurlencode($week));
+
+    $strong = [];
+    $attention = [];
+    $body = '';
+    foreach ($rows as $row) {
+        $rag = training_rag((float) $row['attendance_pct'], (int) $row['safeguarding_flags'], $targets);
+        if ($rag['overall_rag'] === RAG_GREEN) {
+            $strong[] = $row['learner'] . ' is on track with ' . pct($row['attendance_pct']) . ' attendance and no safeguarding flags.';
+        } else {
+            $attention[] = $row['learner'] . ' needs focus: attendance ' . $rag['attendance_rag'] . ', safeguarding ' . $rag['safeguarding_rag'] . '.';
+        }
+        $body .= '<tr><td>' . e($row['learner']) . '</td><td>' . pct($row['attendance_pct']) . '</td><td>' . pct($row['progress_pct']) . '</td><td>' . e($row['epa_readiness']) . '</td><td>' . (int) $row['safeguarding_flags'] . '</td><td>' . badge($rag['attendance_rag']) . '</td><td>' . badge($rag['safeguarding_rag']) . '</td><td>' . badge($rag['overall_rag']) . '</td></tr>';
+    }
+
+    render_page('Training Dashboard', '<section class="hero"><div><p class="eyebrow">Training dashboard</p><h1>Learner health</h1><p>Attendance, progress, EPA readiness, and safeguarding pressure for the selected week.</p></div>' . week_filter('/dashboard') . '</section>
+    <section class="metric-grid">' . $cards . '</section>
+    <div class="two-col">' . insight_panel('Performing strongly', $strong, 'No learners are green overall yet for this week.') . insight_panel('Areas to improve', $attention, 'No learner interventions highlighted this week.') . '</div>
+    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><a href="/training?week=' . e($week) . '">Add or review submissions</a></div><table><thead><tr><th>Learner</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>Attendance RAG</th><th>Safeguarding RAG</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+}
+
+function show_social_dashboard(): void
+{
+    require_area('social');
+    $week = selected_week();
+    $targets = targets_for_kpi();
+    $rows = query_all('SELECT b.*, brands.name AS brand FROM brand_submissions b JOIN brands ON brands.id = b.brand_id WHERE b.week_start = ? ORDER BY brands.name', [$week]);
+    $brandCount = max(count($rows), 1);
+    $posts = array_sum(array_map('intval', array_column($rows, 'posts')));
+    $reels = array_sum(array_map('intval', array_column($rows, 'reels')));
+    $leads = array_sum(array_map('intval', array_column($rows, 'leads')));
+    $followUps = array_sum(array_map('intval', array_column($rows, 'follow_ups')));
+    $followUpPct = $leads > 0 ? $followUps / $leads : 1;
+
+    $cards = card('Posts', (string) $posts, rag_threshold($posts, $brandCount * $targets['social_posts_target'], $brandCount * $targets['social_posts_amber']), '/social?week=' . rawurlencode($week))
+        . card('Reels', (string) $reels, rag_threshold($reels, $brandCount * $targets['social_reels_target'], $brandCount * $targets['social_reels_amber']), '/social?week=' . rawurlencode($week))
+        . card('Leads', (string) $leads, '', '/social?week=' . rawurlencode($week))
+        . card('Follow-up rate', pct($followUpPct), rag_threshold($followUpPct, $targets['social_followup_target'], $targets['social_followup_amber']), '/social?week=' . rawurlencode($week));
+
+    $strong = [];
+    $attention = [];
+    $body = '';
+    foreach ($rows as $row) {
+        $rag = brand_rag((int) $row['posts'], (int) $row['reels'], (int) $row['leads'], (int) $row['follow_ups'], $targets);
+        if ($rag['overall_rag'] === RAG_GREEN) {
+            $strong[] = $row['brand'] . ' is green overall with ' . $row['posts'] . ' posts, ' . $row['reels'] . ' reels, and ' . $row['leads'] . ' leads.';
+        } else {
+            $attention[] = $row['brand'] . ' needs focus: posts ' . $rag['posts_rag'] . ', reels ' . $rag['reels_rag'] . ', follow-up ' . $rag['followup_rag'] . '.';
+        }
+        $body .= '<tr><td>' . e($row['brand']) . '</td><td>' . (int) $row['posts'] . '</td><td>' . (int) $row['reels'] . '</td><td>' . (int) $row['leads'] . '</td><td>' . (int) $row['follow_ups'] . '</td><td>' . badge($rag['posts_rag']) . '</td><td>' . badge($rag['reels_rag']) . '</td><td>' . badge($rag['followup_rag']) . '</td><td>' . badge($rag['overall_rag']) . '</td></tr>';
+    }
+
+    render_page('Social Dashboard', '<section class="hero"><div><p class="eyebrow">Social dashboard</p><h1>Brand cadence and lead discipline</h1><p>Content cadence, lead generation, and follow-up performance for the selected week.</p></div>' . week_filter('/dashboard') . '</section>
+    <section class="metric-grid">' . $cards . '</section>
+    <div class="two-col">' . insight_panel('Performing strongly', $strong, 'No brands are green overall yet for this week.') . insight_panel('Areas to improve', $attention, 'No brand issues highlighted this week.') . '</div>
+    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><a href="/social?week=' . e($week) . '">Add or review submissions</a></div><table><thead><tr><th>Brand</th><th>Posts</th><th>Reels</th><th>Leads</th><th>Follow-ups</th><th>Posts RAG</th><th>Reels RAG</th><th>Follow-up RAG</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+}
+
+function show_hr_dashboard(): void
+{
+    require_area('hr');
+    $week = selected_week();
+    $rows = query_all('SELECT h.*, r.name AS role_name FROM hr_recruitment_submissions h JOIN recruitment_roles r ON r.id = h.role_id WHERE h.week_start = ? ORDER BY r.name', [$week]);
+    $required = array_sum(array_map('intval', array_column($rows, 'required_count')));
+    $pipeline = array_sum(array_map('intval', array_column($rows, 'active_pipeline')));
+    $interviews = array_sum(array_map('intval', array_column($rows, 'interviews')));
+    $offers = array_sum(array_map('intval', array_column($rows, 'offers')));
+    $gap = $required - $pipeline;
+    $pipelineRag = $pipeline >= $required ? RAG_GREEN : ($pipeline > 0 ? RAG_AMBER : RAG_RED);
+
+    $cards = card('Required roles', (string) $required, '', '/hr?week=' . rawurlencode($week))
+        . card('Active pipeline', (string) $pipeline, $pipelineRag, '/hr?week=' . rawurlencode($week))
+        . card('Pipeline gap', (string) $gap, $gap <= 0 ? RAG_GREEN : RAG_RED, '/hr?week=' . rawurlencode($week))
+        . card('Interviews', (string) $interviews, '', '/hr?week=' . rawurlencode($week))
+        . card('Offers', (string) $offers, '', '/hr?week=' . rawurlencode($week));
+
+    $strong = [];
+    $attention = [];
+    $body = '';
+    foreach ($rows as $row) {
+        $rag = recruitment_rag((int) $row['required_count'], (int) $row['active_pipeline']);
+        $roleGap = (int) $row['required_count'] - (int) $row['active_pipeline'];
+        if ($rag['pipeline_rag'] === RAG_GREEN) {
+            $strong[] = $row['role_name'] . ' pipeline meets requirement with ' . $row['active_pipeline'] . ' active candidates.';
+        } else {
+            $attention[] = $row['role_name'] . ' has a pipeline gap of ' . $roleGap . ' against requirement.';
+        }
+        $body .= '<tr><td>' . e($row['role_name']) . '</td><td>' . (int) $row['required_count'] . '</td><td>' . (int) $row['active_pipeline'] . '</td><td>' . $roleGap . '</td><td>' . (int) $row['interviews'] . '</td><td>' . (int) $row['offers'] . '</td><td>' . badge($rag['pipeline_rag']) . '</td></tr>';
+    }
+
+    render_page('HR Dashboard', '<section class="hero"><div><p class="eyebrow">HR dashboard</p><h1>Recruitment pipeline</h1><p>Pipeline coverage, gaps, interviews, and offers for the selected week.</p></div>' . week_filter('/dashboard') . '</section>
+    <section class="metric-grid">' . $cards . '</section>
+    <div class="two-col">' . insight_panel('Performing strongly', $strong, 'No roles are green on pipeline yet for this week.') . insight_panel('Areas to improve', $attention, 'No recruitment gaps highlighted this week.') . '</div>
+    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><a href="/hr?week=' . e($week) . '">Add or review submissions</a></div><table><thead><tr><th>Role</th><th>Required</th><th>Pipeline</th><th>Gap</th><th>Interviews</th><th>Offers</th><th>Pipeline RAG</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function executive_metrics(string $week, array $targets): array
