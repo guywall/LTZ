@@ -12,24 +12,33 @@ Custom PHP + MySQL web app for the LTZ weekly cadence workflow that was original
 - Risk register, action tracker, target editing, lookup editing, and user creation.
 - MySQL schema and seed data from the workbook.
 
-## Local setup
+## VPS install
 
-1. Create a MySQL database.
-2. Import the schema and seed data:
-
-```bash
-mysql -u root -p ltz_operational_intelligence < database/schema.sql
-mysql -u root -p ltz_operational_intelligence < database/seed.sql
-```
-
-3. Copy `config/config.php.example` to `config/config.php` and update the database credentials.
-4. Run the app locally:
+Upload this project folder to the VPS, then run the installer from the project root:
 
 ```bash
-php -S 127.0.0.1:8080 -t public
+chmod +x deploy/install-vps.sh
+sudo DOMAIN=yourdomain.com CONFIGURE_NGINX=yes INSTALL_PACKAGES=yes deploy/install-vps.sh
 ```
 
-5. Open `http://127.0.0.1:8080`.
+The installer creates the MySQL database/user, imports `database/schema.sql`, imports `database/seed.sql`, writes `config/config.php`, sets file permissions, and can create the Nginx site.
+
+Useful installer options:
+
+```bash
+sudo DB_NAME=ltz DB_USER=ltz_app DB_PASS='strong-password' deploy/install-vps.sh
+sudo RESET_DB=yes CONFIGURE_NGINX=yes DOMAIN=yourdomain.com deploy/install-vps.sh
+sudo INSTALL_SEED=no deploy/install-vps.sh
+```
+
+After the domain points at the VPS, add HTTPS:
+
+```bash
+sudo apt-get install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d yourdomain.com
+```
+
+See `deploy/README.md` for the full installer reference.
 
 Seed accounts use `ChangeMe123!` as the password. Example logins:
 
@@ -45,14 +54,6 @@ Seed accounts use `ChangeMe123!` as the password. Example logins:
 
 Change these passwords before any real deployment.
 
-## VPS deployment notes
-
-- PHP 8.2+ with PDO MySQL enabled.
-- MySQL 8+.
-- Apache or Nginx should point the web root at `public/`.
-- `config/config.php` should not be committed.
-- Use HTTPS and secure session cookie settings at the web server/PHP configuration level.
-
 ## Verification
 
 ```bash
@@ -61,4 +62,3 @@ php -l app/app.php
 php -l app/kpi.php
 php tests/kpi_test.php
 ```
-
