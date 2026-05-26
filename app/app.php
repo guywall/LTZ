@@ -47,12 +47,12 @@ function e(mixed $value): string
     return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
 }
 
-function money(float|int|null $value): string
+function money(mixed $value): string
 {
     return 'GBP ' . number_format((float) $value, 0);
 }
 
-function pct(float|int|null $value): string
+function pct(mixed $value): string
 {
     return number_format(((float) $value) * 100, 0) . '%';
 }
@@ -443,9 +443,14 @@ function badge(string $rag): string
     return '<span class="rag rag-' . e($class) . '">' . e($rag) . '</span>';
 }
 
-function card(string $label, string $value, string $rag = ''): string
+function card(string $label, string $value, string $rag = '', string $href = ''): string
 {
-    return '<article class="metric"><span>' . e($label) . '</span><strong>' . $value . '</strong>' . ($rag ? badge($rag) : '') . '</article>';
+    $inner = '<span>' . e($label) . '</span><strong>' . $value . '</strong>' . ($rag ? badge($rag) : '');
+    if ($href !== '') {
+        return '<a class="metric metric-link" href="' . e($href) . '">' . $inner . '</a>';
+    }
+
+    return '<article class="metric">' . $inner . '</article>';
 }
 
 function show_dashboard(): void
@@ -455,12 +460,14 @@ function show_dashboard(): void
     $metrics = executive_metrics($week, $targets);
     $leadership = leadership_rows($week, $targets);
 
-    $cards = card('Weekly RTB', money($metrics['weekly_rtb']), $metrics['weekly_rtb_rag'])
-        . card('Occupied chairs', (string) $metrics['occupied_chairs'], $metrics['occupied_chairs_rag'])
-        . card('Active learners', (string) $metrics['active_learners'], $metrics['active_learners_rag'])
-        . card('Social leads', (string) $metrics['social_leads'], $metrics['social_leads_rag'])
-        . card('Senior pipeline', (string) $metrics['senior_pipeline'], $metrics['senior_pipeline_rag'])
-        . card('Open actions', (string) $metrics['open_actions']);
+    $weekParam = '?week=' . rawurlencode($week);
+    $cards = card('Weekly RTB', money($metrics['weekly_rtb']), $metrics['weekly_rtb_rag'], '/barbers' . $weekParam)
+        . card('Occupied chairs', (string) $metrics['occupied_chairs'], $metrics['occupied_chairs_rag'], '/barbers' . $weekParam)
+        . card('Active learners', (string) $metrics['active_learners'], $metrics['active_learners_rag'], '/training' . $weekParam)
+        . card('Social leads', (string) $metrics['social_leads'], $metrics['social_leads_rag'], '/social' . $weekParam)
+        . card('Senior pipeline', (string) $metrics['senior_pipeline'], $metrics['senior_pipeline_rag'], '/hr' . $weekParam)
+        . card('Open actions', (string) $metrics['open_actions'], '', '/actions')
+        . card('Open risks', (string) $metrics['open_risks'], '', '/risks');
 
     $rows = '';
     foreach ($leadership as $row) {
