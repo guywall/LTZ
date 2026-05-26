@@ -15,6 +15,7 @@ function app_config(): array
     $local = __DIR__ . '/../config/config.php';
     $example = __DIR__ . '/../config/config.php.example';
     $config = file_exists($local) ? require $local : require $example;
+    date_default_timezone_set((string) ($config['timezone'] ?? 'Europe/London'));
 
     return $config;
 }
@@ -434,108 +435,106 @@ function navigation(): string
     </header>';
 }
 
-function selected_week(): string
-{
-    $week = (string) ($_GET['week'] ?? '');
-    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $week)) {
-        return normalize_week_start($week);
-    }
-
-    $latest = query_one(
-        "SELECT MAX(week_start) AS week_start FROM (
-            SELECT week_start FROM weekly_barber_submissions
-            UNION ALL SELECT week_start FROM training_submissions
-            UNION ALL SELECT week_start FROM brand_submissions
-            UNION ALL SELECT week_start FROM hr_recruitment_submissions
-        ) weeks"
-    );
-
-    return normalize_week_start($latest['week_start'] ?? date('Y-m-d'));
-}
-
-function normalize_week_start(string $date): string
+function normal_date(string $date): string
 {
     $timestamp = strtotime($date);
     if ($timestamp === false) {
         $timestamp = time();
     }
 
-    return date('Y-m-d', strtotime('monday this week', $timestamp));
+    return date('Y-m-d', $timestamp);
+}
+
+function normalize_week_start(string $date): string
+{
+    return date('Y-m-d', strtotime('monday this week', strtotime(normal_date($date))));
 }
 
 function week_bounds(string $week): array
 {
-    $start = normalize_week_start($week);
-    return [$start, date('Y-m-d', strtotime($start . ' +6 days'))];
+    $range = selected_date_range();
+    return [$range['start'], $range['end']];
 }
 
-function week_options(string $selected): string
+function selected_week(): string
 {
-    $selected = normalize_week_start($selected);
-    $weeks = [$selected => true];
-    $thisWeek = normalize_week_start(date('Y-m-d'));
-    $lastWeek = date('Y-m-d', strtotime($thisWeek . ' -7 days'));
-    $nextWeek = date('Y-m-d', strtotime($thisWeek . ' +7 days'));
+    return selected_date_range()['start'];
+}
 
-    $rows = query_all(
-        "SELECT DISTINCT week_start FROM (
-            SELECT week_start FROM weekly_barber_submissions
-            UNION ALL SELECT week_start FROM training_submissions
-            UNION ALL SELECT week_start FROM brand_submissions
-            UNION ALL SELECT week_start FROM hr_recruitment_submissions
-        ) weeks
-        WHERE week_start IS NOT NULL
-        ORDER BY week_start DESC
-        LIMIT 40"
-    );
-
-    foreach ($rows as $row) {
-        $weeks[normalize_week_start((string) $row['week_start'])] = true;
+function selected_date_range(): array
+{
+    $preset = (string) ($_GET['preset'] ?? 'this_week');
+    if (!in_array($preset, ['this_week', 'last_week', 'next_week', 'mtd', 'last_month', 'ytd', 'custom'], true)) {
+        $preset = 'this_week';
     }
 
-    for ($i = -8; $i <= 4; $i++) {
-        $weeks[date('Y-m-d', strtotime("monday this week {$i} weeks"))] = true;
+    $today = date('Y-m-d');
+    $thisWeek = normalize_week_start($today);
+
+    [$start, $end, $label] = match ($preset) {
+        'last_week' => [date('Y-m-d', strtotime($thisWeek . ' -7 days')), date('Y-m-d', strtotime($thisWeek . ' -1 day')), 'Last week'],
+        'next_week' => [date('Y-m-d', strtotime($thisWeek . ' +7 days')), date('Y-m-d', strtotime($thisWeek . ' +13 days')), 'Next week'],
+        'mtd' => [date('Y-m-01'), $today, 'Month to date'],
+        'last_month' => [date('Y-m-01', strtotime('first day of last month')), date('Y-m-t', strtotime('last month')), 'Last month'],
+        'ytd' => [date('Y-01-01'), $today, 'Year to date'],
+        'custom' => [normal_date((string) ($_GET['start'] ?? $thisWeek)), normal_date((string) ($_GET['end'] ?? $today)), 'Custom range'],
+        default => [$thisWeek, date('Y-m-d', strtotime($thisWeek . ' +6 days')), 'This week'],
+    };
+
+    if ($start > $end) {
+        [$start, $end] = [$end, $start];
     }
 
-    $weekKeys = array_keys($weeks);
-    rsort($weekKeys);
-    $html = '';
-
-    $quickOptions = [
-        $thisWeek => 'This week',
-        $lastWeek => 'Last week',
-        $nextWeek => 'Next week',
+    return [
+        'preset' => $preset,
+        'start' => $start,
+        'end' => $end,
+        'label' => $label,
     ];
-    foreach ($quickOptions as $week => $label) {
-        $isSelected = $week === $selected ? ' selected' : '';
-        $html .= '<option value="' . e($week) . '"' . $isSelected . '>' . e($label . ' - w/c ' . date('D j M Y', strtotime($week))) . '</option>';
-    }
-
-    $html .= '<option disabled>Past weeks</option>';
-    foreach ($weekKeys as $week) {
-        if (isset($quickOptions[$week])) {
-            continue;
-        }
-        $isSelected = $week === $selected ? ' selected' : '';
-        $label = 'Week commencing ' . date('D j M Y', strtotime($week));
-        $html .= '<option value="' . e($week) . '"' . $isSelected . '>' . e($label) . '</option>';
-    }
-
-    return $html;
 }
 
-function week_filter(string $basePath): string
+function range_query(array $extra = []): string
 {
-    $week = selected_week();
+    $range = selected_date_range();
+    $params = [
+        'preset' => $range['preset'],
+        'start' => $range['start'],
+        'end' => $range['end'],
+    ];
+
+    return '?' . http_build_query(array_merge($params, $extra));
+}
+
+function period_label(): string
+{
+    $range = selected_date_range();
+    return $range['label'] . ': ' . date('j M Y', strtotime($range['start'])) . ' to ' . date('j M Y', strtotime($range['end']));
+}
+
+function date_range_filter(string $basePath): string
+{
+    $range = selected_date_range();
+    $options = [
+        'this_week' => 'This week',
+        'last_week' => 'Last week',
+        'next_week' => 'Next week',
+        'mtd' => 'Month to date',
+        'last_month' => 'Last month',
+        'ytd' => 'Year to date',
+        'custom' => 'Custom range',
+    ];
+    $presetOptions = '';
+    foreach ($options as $value => $label) {
+        $selected = $range['preset'] === $value ? ' selected' : '';
+        $presetOptions .= '<option value="' . e($value) . '"' . $selected . '>' . e($label) . '</option>';
+    }
+
     return '<form class="filterbar" method="get" action="' . e($basePath) . '">
-        <label>Week commencing<select name="week">' . week_options($week) . '</select></label>
+        <label>Period<select name="preset">' . $presetOptions . '</select></label>
+        <label>From<input type="date" name="start" value="' . e($range['start']) . '"></label>
+        <label>To<input type="date" name="end" value="' . e($range['end']) . '"></label>
         <button type="submit">Apply</button>
     </form>';
-}
-
-function week_select_field(string $name, string $selected): string
-{
-    return '<select name="' . e($name) . '" required>' . week_options($selected) . '</select>';
 }
 
 function lookup_options(string $table, ?int $selected = null): string
@@ -620,7 +619,7 @@ function delete_by_id(string $table, int $id): ?string
     }
 
     execute_sql("DELETE FROM {$table} WHERE id = ?", [$id]);
-    return normalize_week_start((string) $row['week_start']);
+    return normal_date((string) $row['week_start']);
 }
 
 function show_dashboard(): void
@@ -655,12 +654,12 @@ function show_executive_dashboard(): void
     $metrics = executive_metrics($week, $targets);
     $leadership = leadership_rows($week, $targets);
 
-    $weekParam = '?week=' . rawurlencode($week);
-    $cards = card('Weekly RTB', money($metrics['weekly_rtb']), $metrics['weekly_rtb_rag'], '/barbers' . $weekParam)
-        . card('Occupied chairs', (string) $metrics['occupied_chairs'], $metrics['occupied_chairs_rag'], '/barbers' . $weekParam)
-        . card('Active learners', (string) $metrics['active_learners'], $metrics['active_learners_rag'], '/training' . $weekParam)
-        . card('Social leads', (string) $metrics['social_leads'], $metrics['social_leads_rag'], '/social' . $weekParam)
-        . card('Senior pipeline', (string) $metrics['senior_pipeline'], $metrics['senior_pipeline_rag'], '/hr' . $weekParam)
+    $rangeQuery = range_query();
+    $cards = card('RTB', money($metrics['weekly_rtb']), $metrics['weekly_rtb_rag'], '/barbers' . $rangeQuery)
+        . card('Occupied chairs', (string) $metrics['occupied_chairs'], $metrics['occupied_chairs_rag'], '/barbers' . $rangeQuery)
+        . card('Active learners', (string) $metrics['active_learners'], $metrics['active_learners_rag'], '/training' . $rangeQuery)
+        . card('Social leads', (string) $metrics['social_leads'], $metrics['social_leads_rag'], '/social' . $rangeQuery)
+        . card('Senior pipeline', (string) $metrics['senior_pipeline'], $metrics['senior_pipeline_rag'], '/hr' . $rangeQuery)
         . card('Open actions', (string) $metrics['open_actions'], '', '/actions')
         . card('Open risks', (string) $metrics['open_risks'], '', '/risks');
 
@@ -670,11 +669,11 @@ function show_executive_dashboard(): void
     }
 
     render_page('Dashboard', '<section class="hero">
-        <div><p class="eyebrow">Weekly cadence</p><h1>Executive dashboard</h1><p>Operational, people, social, and training signals for the selected week.</p></div>
-        ' . week_filter('/dashboard') . '
+        <div><p class="eyebrow">Reporting period</p><h1>Executive dashboard</h1><p>' . e(period_label()) . '</p></div>
+        ' . date_range_filter('/dashboard') . '
     </section>
     <section class="metric-grid">' . $cards . '</section>
-    <section class="panel"><div class="panel-title"><h2>Leadership RAG</h2><a href="/leadership?week=' . e($week) . '">Open leadership view</a></div>
+    <section class="panel"><div class="panel-title"><h2>Leadership RAG</h2><a href="/leadership' . e($rangeQuery) . '">Open leadership view</a></div>
         <table><thead><tr><th>Leader</th><th>Area</th><th>Overall</th><th>Open risks</th><th>Open actions</th></tr></thead><tbody>' . $rows . '</tbody></table>
     </section>');
 }
@@ -713,12 +712,13 @@ function show_barber_dashboard(): void
     $avgUtilisation = average_value(array_column($rows, 'utilisation_pct'));
     $occupied = count(array_filter($rows, fn(array $row): bool => (float) $row['rtb'] > 0));
 
-    $cards = card('Weekly RTB', money($totalRtb), rag_threshold($avgRtb, $targets['barber_rtb_target'], $targets['barber_rtb_amber']), '/barbers?week=' . rawurlencode($week))
-        . card('Occupied chairs', (string) $occupied, '', '/barbers?week=' . rawurlencode($week))
-        . card('Avg RTB / barber', money($avgRtb), rag_threshold($avgRtb, $targets['barber_rtb_target'], $targets['barber_rtb_amber']), '/barbers?week=' . rawurlencode($week))
-        . card('Avg days worked', number_format($avgDays, 1), rag_threshold($avgDays, $targets['barber_days_target'], $targets['barber_days_amber']), '/barbers?week=' . rawurlencode($week))
-        . card('Avg rebooking', pct($avgRebooking), rag_threshold($avgRebooking, $targets['barber_rebooking_target'], $targets['barber_rebooking_amber']), '/barbers?week=' . rawurlencode($week))
-        . card('Avg utilisation', pct($avgUtilisation), rag_threshold($avgUtilisation, $targets['barber_utilisation_target'], $targets['barber_utilisation_amber']), '/barbers?week=' . rawurlencode($week));
+    $rangeQuery = range_query();
+    $cards = card('RTB', money($totalRtb), rag_threshold($avgRtb, $targets['barber_rtb_target'], $targets['barber_rtb_amber']), '/barbers' . $rangeQuery)
+        . card('Occupied chairs', (string) $occupied, '', '/barbers' . $rangeQuery)
+        . card('Avg RTB / barber', money($avgRtb), rag_threshold($avgRtb, $targets['barber_rtb_target'], $targets['barber_rtb_amber']), '/barbers' . $rangeQuery)
+        . card('Avg days worked', number_format($avgDays, 1), rag_threshold($avgDays, $targets['barber_days_target'], $targets['barber_days_amber']), '/barbers' . $rangeQuery)
+        . card('Avg rebooking', pct($avgRebooking), rag_threshold($avgRebooking, $targets['barber_rebooking_target'], $targets['barber_rebooking_amber']), '/barbers' . $rangeQuery)
+        . card('Avg utilisation', pct($avgUtilisation), rag_threshold($avgUtilisation, $targets['barber_utilisation_target'], $targets['barber_utilisation_amber']), '/barbers' . $rangeQuery);
 
     $strong = [];
     $attention = [];
@@ -732,10 +732,10 @@ function show_barber_dashboard(): void
         $body .= '<tr><td>' . e($row['site']) . '</td><td>' . e($row['barber']) . '</td><td>' . money($row['rtb']) . '</td><td>' . e($row['days_worked']) . '</td><td>' . badge($row['rtb_rag']) . '</td><td>' . badge($row['days_rag']) . '</td><td>' . badge($row['overall_rag']) . '</td></tr>';
     }
 
-    render_page('Barber Dashboard', '<section class="hero"><div><p class="eyebrow">Operations dashboard</p><h1>Barber weekly performance</h1><p>RTB, chair occupancy, days worked, rebooking, and utilisation for the selected week.</p></div>' . week_filter('/dashboard') . '</section>
+    render_page('Barber Dashboard', '<section class="hero"><div><p class="eyebrow">Operations dashboard</p><h1>Barber performance</h1><p>' . e(period_label()) . '</p></div>' . date_range_filter('/dashboard') . '</section>
     <section class="metric-grid">' . $cards . '</section>
     <div class="two-col">' . insight_panel('Performing strongly', $strong, 'No green barber performance yet for this week.') . insight_panel('Areas to improve', $attention, 'No amber or red barber performance this week.') . '</div>
-    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><a href="/barbers?week=' . e($week) . '">Add or review submissions</a></div><table><thead><tr><th>Site</th><th>Barber</th><th>RTB</th><th>Days</th><th>RTB RAG</th><th>Days RAG</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><a href="/barbers' . e($rangeQuery) . '">Add or review submissions</a></div><table><thead><tr><th>Site</th><th>Barber</th><th>RTB</th><th>Days</th><th>RTB RAG</th><th>Days RAG</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function show_training_dashboard(): void
@@ -752,10 +752,11 @@ function show_training_dashboard(): void
     $attendanceRag = rag_threshold($avgAttendance, $targets['training_attendance_target'], $targets['training_attendance_amber']);
     $safeguardingRag = $flags === 0 ? RAG_GREEN : ($flags === 1 ? RAG_AMBER : RAG_RED);
 
-    $cards = card('Active learners', (string) $count, '', '/training?week=' . rawurlencode($week))
-        . card('Avg attendance', pct($avgAttendance), $attendanceRag, '/training?week=' . rawurlencode($week))
-        . card('Avg progress', pct($avgProgress), '', '/training?week=' . rawurlencode($week))
-        . card('Safeguarding flags', (string) $flags, $safeguardingRag, '/training?week=' . rawurlencode($week));
+    $rangeQuery = range_query();
+    $cards = card('Active learners', (string) $count, '', '/training' . $rangeQuery)
+        . card('Avg attendance', pct($avgAttendance), $attendanceRag, '/training' . $rangeQuery)
+        . card('Avg progress', pct($avgProgress), '', '/training' . $rangeQuery)
+        . card('Safeguarding flags', (string) $flags, $safeguardingRag, '/training' . $rangeQuery);
 
     $strong = [];
     $attention = [];
@@ -770,10 +771,10 @@ function show_training_dashboard(): void
         $body .= '<tr><td><a href="/learners/view?id=' . (int) $row['learner_id'] . '">' . e($row['learner_name']) . '</a></td><td>' . pct($row['attendance_pct']) . '</td><td>' . pct($row['progress_pct']) . '</td><td>' . e($row['epa_readiness']) . '</td><td>' . (int) $row['safeguarding_flags'] . '</td><td>' . badge($rag['attendance_rag']) . '</td><td>' . badge($rag['safeguarding_rag']) . '</td><td>' . badge($rag['overall_rag']) . '</td></tr>';
     }
 
-    render_page('Training Dashboard', '<section class="hero"><div><p class="eyebrow">Training dashboard</p><h1>Learner health</h1><p>Attendance, progress, EPA readiness, and safeguarding pressure for the selected week.</p></div>' . week_filter('/dashboard') . '</section>
+    render_page('Training Dashboard', '<section class="hero"><div><p class="eyebrow">Training dashboard</p><h1>Learner health</h1><p>' . e(period_label()) . '</p></div>' . date_range_filter('/dashboard') . '</section>
     <section class="metric-grid">' . $cards . '</section>
     <div class="two-col">' . insight_panel('Performing strongly', $strong, 'No learners are green overall yet for this week.') . insight_panel('Areas to improve', $attention, 'No learner interventions highlighted this week.') . '</div>
-    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><span><a href="/learners">Learner records</a> | <a href="/training?week=' . e($week) . '">Add or review submissions</a></span></div><table><thead><tr><th>Learner</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>Attendance RAG</th><th>Safeguarding RAG</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><span><a href="/learners">Learner records</a> | <a href="/training' . e($rangeQuery) . '">Add or review submissions</a></span></div><table><thead><tr><th>Learner</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>Attendance RAG</th><th>Safeguarding RAG</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function show_social_dashboard(): void
@@ -790,10 +791,11 @@ function show_social_dashboard(): void
     $followUps = array_sum(array_map('intval', array_column($rows, 'follow_ups')));
     $followUpPct = $leads > 0 ? $followUps / $leads : 1;
 
-    $cards = card('Posts', (string) $posts, rag_threshold($posts, $brandCount * $targets['social_posts_target'], $brandCount * $targets['social_posts_amber']), '/social?week=' . rawurlencode($week))
-        . card('Reels', (string) $reels, rag_threshold($reels, $brandCount * $targets['social_reels_target'], $brandCount * $targets['social_reels_amber']), '/social?week=' . rawurlencode($week))
-        . card('Leads', (string) $leads, '', '/social?week=' . rawurlencode($week))
-        . card('Follow-up rate', pct($followUpPct), rag_threshold($followUpPct, $targets['social_followup_target'], $targets['social_followup_amber']), '/social?week=' . rawurlencode($week));
+    $rangeQuery = range_query();
+    $cards = card('Posts', (string) $posts, rag_threshold($posts, $brandCount * $targets['social_posts_target'], $brandCount * $targets['social_posts_amber']), '/social' . $rangeQuery)
+        . card('Reels', (string) $reels, rag_threshold($reels, $brandCount * $targets['social_reels_target'], $brandCount * $targets['social_reels_amber']), '/social' . $rangeQuery)
+        . card('Leads', (string) $leads, '', '/social' . $rangeQuery)
+        . card('Follow-up rate', pct($followUpPct), rag_threshold($followUpPct, $targets['social_followup_target'], $targets['social_followup_amber']), '/social' . $rangeQuery);
 
     $strong = [];
     $attention = [];
@@ -808,10 +810,10 @@ function show_social_dashboard(): void
         $body .= '<tr><td>' . e($row['brand']) . '</td><td>' . (int) $row['posts'] . '</td><td>' . (int) $row['reels'] . '</td><td>' . (int) $row['leads'] . '</td><td>' . (int) $row['follow_ups'] . '</td><td>' . badge($rag['posts_rag']) . '</td><td>' . badge($rag['reels_rag']) . '</td><td>' . badge($rag['followup_rag']) . '</td><td>' . badge($rag['overall_rag']) . '</td></tr>';
     }
 
-    render_page('Social Dashboard', '<section class="hero"><div><p class="eyebrow">Social dashboard</p><h1>Brand cadence and lead discipline</h1><p>Content cadence, lead generation, and follow-up performance for the selected week.</p></div>' . week_filter('/dashboard') . '</section>
+    render_page('Social Dashboard', '<section class="hero"><div><p class="eyebrow">Social dashboard</p><h1>Brand cadence and lead discipline</h1><p>' . e(period_label()) . '</p></div>' . date_range_filter('/dashboard') . '</section>
     <section class="metric-grid">' . $cards . '</section>
     <div class="two-col">' . insight_panel('Performing strongly', $strong, 'No brands are green overall yet for this week.') . insight_panel('Areas to improve', $attention, 'No brand issues highlighted this week.') . '</div>
-    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><a href="/social?week=' . e($week) . '">Add or review submissions</a></div><table><thead><tr><th>Brand</th><th>Posts</th><th>Reels</th><th>Leads</th><th>Follow-ups</th><th>Posts RAG</th><th>Reels RAG</th><th>Follow-up RAG</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><a href="/social' . e($rangeQuery) . '">Add or review submissions</a></div><table><thead><tr><th>Brand</th><th>Posts</th><th>Reels</th><th>Leads</th><th>Follow-ups</th><th>Posts RAG</th><th>Reels RAG</th><th>Follow-up RAG</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function show_hr_dashboard(): void
@@ -827,11 +829,12 @@ function show_hr_dashboard(): void
     $gap = $required - $pipeline;
     $pipelineRag = $pipeline >= $required ? RAG_GREEN : ($pipeline > 0 ? RAG_AMBER : RAG_RED);
 
-    $cards = card('Required roles', (string) $required, '', '/hr?week=' . rawurlencode($week))
-        . card('Active pipeline', (string) $pipeline, $pipelineRag, '/hr?week=' . rawurlencode($week))
-        . card('Pipeline gap', (string) $gap, $gap <= 0 ? RAG_GREEN : RAG_RED, '/hr?week=' . rawurlencode($week))
-        . card('Interviews', (string) $interviews, '', '/hr?week=' . rawurlencode($week))
-        . card('Offers', (string) $offers, '', '/hr?week=' . rawurlencode($week));
+    $rangeQuery = range_query();
+    $cards = card('Required roles', (string) $required, '', '/hr' . $rangeQuery)
+        . card('Active pipeline', (string) $pipeline, $pipelineRag, '/hr' . $rangeQuery)
+        . card('Pipeline gap', (string) $gap, $gap <= 0 ? RAG_GREEN : RAG_RED, '/hr' . $rangeQuery)
+        . card('Interviews', (string) $interviews, '', '/hr' . $rangeQuery)
+        . card('Offers', (string) $offers, '', '/hr' . $rangeQuery);
 
     $strong = [];
     $attention = [];
@@ -847,10 +850,10 @@ function show_hr_dashboard(): void
         $body .= '<tr><td>' . e($row['role_name']) . '</td><td>' . (int) $row['required_count'] . '</td><td>' . (int) $row['active_pipeline'] . '</td><td>' . $roleGap . '</td><td>' . (int) $row['interviews'] . '</td><td>' . (int) $row['offers'] . '</td><td>' . badge($rag['pipeline_rag']) . '</td></tr>';
     }
 
-    render_page('HR Dashboard', '<section class="hero"><div><p class="eyebrow">HR dashboard</p><h1>Recruitment pipeline</h1><p>Pipeline coverage, gaps, interviews, and offers for the selected week.</p></div>' . week_filter('/dashboard') . '</section>
+    render_page('HR Dashboard', '<section class="hero"><div><p class="eyebrow">HR dashboard</p><h1>Recruitment pipeline</h1><p>' . e(period_label()) . '</p></div>' . date_range_filter('/dashboard') . '</section>
     <section class="metric-grid">' . $cards . '</section>
     <div class="two-col">' . insight_panel('Performing strongly', $strong, 'No roles are green on pipeline yet for this week.') . insight_panel('Areas to improve', $attention, 'No recruitment gaps highlighted this week.') . '</div>
-    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><a href="/hr?week=' . e($week) . '">Add or review submissions</a></div><table><thead><tr><th>Role</th><th>Required</th><th>Pipeline</th><th>Gap</th><th>Interviews</th><th>Offers</th><th>Pipeline RAG</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    <section class="panel"><div class="panel-title"><h2>RAG factors</h2><a href="/hr' . e($rangeQuery) . '">Add or review submissions</a></div><table><thead><tr><th>Role</th><th>Required</th><th>Pipeline</th><th>Gap</th><th>Interviews</th><th>Offers</th><th>Pipeline RAG</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function executive_metrics(string $week, array $targets): array
@@ -924,9 +927,9 @@ function show_barbers(): void
         $body .= '<tr><td>' . e($row['site']) . '</td><td>' . e($row['barber']) . '</td><td>' . money($row['rtb']) . '</td><td>' . e($row['days_worked']) . '</td><td>' . pct($row['rebooking_pct']) . '</td><td>' . pct($row['utilisation_pct']) . '</td><td>' . badge($row['overall_rag']) . '</td>' . ($canDelete ? '<td>' . delete_form('/barbers/delete', (int) $row['id']) . '</td>' : '') . '</tr>';
     }
 
-    render_page('Barbers', '<section class="hero"><div><p class="eyebrow">Operations</p><h1>Barber submissions</h1></div>' . week_filter('/barbers') . '</section>
+    render_page('Barbers', '<section class="hero"><div><p class="eyebrow">Operations</p><h1>Barber submissions</h1></div>' . date_range_filter('/barbers') . '</section>
     ' . submission_form_barber($week) . '
-    <section class="panel"><h2>Weekly barber RAG</h2><table><thead><tr><th>Site</th><th>Barber</th><th>RTB</th><th>Days</th><th>Rebooking</th><th>Utilisation</th><th>RAG</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
+    <section class="panel"><h2>Barber RAG</h2><table><thead><tr><th>Site</th><th>Barber</th><th>RTB</th><th>Days</th><th>Rebooking</th><th>Utilisation</th><th>RAG</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function submission_form_barber(string $week): string
@@ -935,8 +938,8 @@ function submission_form_barber(string $week): string
         return '';
     }
 
-    return '<section class="panel"><h2>Add barber submission</h2><form class="grid-form" method="post" action="/barbers?week=' . e($week) . '">' . csrf_field() . '
-        <label>Week commencing' . week_select_field('week_start', $week) . '</label>
+    return '<section class="panel"><h2>Add barber submission</h2><form class="grid-form" method="post" action="/barbers">' . csrf_field() . '
+        <p class="form-note span-2">Submission date: today (' . e(date('j M Y')) . ')</p>
         <label>Site<select name="site_id" required>' . lookup_options('sites') . '</select></label>
         <label>Barber<select name="barber_id" required>' . lookup_options('barbers') . '</select></label>
         <label>RTB cash<input type="number" name="rtb_cash" min="0" step="0.01" required></label>
@@ -953,12 +956,12 @@ function submission_form_barber(string $week): string
 function store_barber_submission(): void
 {
     require_area('barbers', true);
-    $weekStart = normalize_week_start((string) $_POST['week_start']);
+    $submissionDate = date('Y-m-d');
     execute_sql(
         'INSERT INTO weekly_barber_submissions (week_start, site_id, barber_id, rtb_cash, rtb_card, total_sales, days_worked, rebooking_pct, utilisation_pct, notes, submitted_by)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
-            $weekStart,
+            $submissionDate,
             (int) $_POST['site_id'],
             (int) $_POST['barber_id'],
             (float) $_POST['rtb_cash'],
@@ -972,15 +975,15 @@ function store_barber_submission(): void
         ]
     );
     flash('Barber submission saved.');
-    redirect('/barbers?week=' . rawurlencode($weekStart));
+    redirect('/barbers');
 }
 
 function delete_barber_submission(): void
 {
     require_area('barbers', true);
-    $week = delete_by_id('weekly_barber_submissions', (int) ($_POST['id'] ?? 0)) ?? selected_week();
+    delete_by_id('weekly_barber_submissions', (int) ($_POST['id'] ?? 0));
     flash('Barber submission deleted.');
-    redirect('/barbers?week=' . rawurlencode($week));
+    redirect('/barbers');
 }
 
 function show_training(): void
@@ -997,7 +1000,7 @@ function show_training(): void
         $body .= '<tr><td><a href="/learners/view?id=' . (int) $row['learner_id'] . '">' . e($row['learner_name']) . '</a></td><td>' . pct($row['attendance_pct']) . '</td><td>' . pct($row['progress_pct']) . '</td><td>' . e($row['epa_readiness']) . '</td><td>' . (int) $row['safeguarding_flags'] . '</td><td>' . badge($rag['overall_rag']) . '</td>' . ($canDelete ? '<td>' . delete_form('/training/delete', (int) $row['id']) . '</td>' : '') . '</tr>';
     }
 
-    render_page('Training', '<section class="hero"><div><p class="eyebrow">Training</p><h1>Learner health</h1></div>' . week_filter('/training') . '</section>' . submission_form_training($week) . '<section class="panel"><div class="panel-title"><h2>Weekly learner RAG</h2><a href="/learners">Learner records</a></div><table><thead><tr><th>Learner</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>RAG</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
+    render_page('Training', '<section class="hero"><div><p class="eyebrow">Training</p><h1>Learner health</h1></div>' . date_range_filter('/training') . '</section>' . submission_form_training($week) . '<section class="panel"><div class="panel-title"><h2>Learner RAG</h2><a href="/learners">Learner records</a></div><table><thead><tr><th>Learner</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>RAG</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function training_rows(string $week): array
@@ -1020,8 +1023,8 @@ function submission_form_training(string $week): string
         return '';
     }
 
-    return '<section class="panel"><h2>Add training submission</h2><form class="grid-form" method="post" action="/training?week=' . e($week) . '">' . csrf_field() . '
-        <label>Week commencing' . week_select_field('week_start', $week) . '</label>
+    return '<section class="panel"><h2>Add training submission</h2><form class="grid-form" method="post" action="/training">' . csrf_field() . '
+        <p class="form-note span-2">Submission date: today (' . e(date('j M Y')) . ')</p>
         <label>Learner<select name="learner_id" required>' . lookup_options('learners') . '</select></label>
         <label>Attendance %<input type="number" name="attendance_pct" min="0" max="100" step="0.1" required></label>
         <label>Progress %<input type="number" name="progress_pct" min="0" max="100" step="0.1" required></label>
@@ -1036,12 +1039,12 @@ function store_training_submission(): void
 {
     require_area('training', true);
     require_learners_ready();
-    $weekStart = normalize_week_start((string) $_POST['week_start']);
+    $submissionDate = date('Y-m-d');
     execute_sql(
         'INSERT INTO training_submissions (week_start, learner_id, learner, attendance_pct, progress_pct, epa_readiness, safeguarding_flags, risk_notes, submitted_by)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
-            $weekStart,
+            $submissionDate,
             (int) $_POST['learner_id'],
             learner_name((int) $_POST['learner_id']),
             percentage_input_to_decimal($_POST['attendance_pct']),
@@ -1053,15 +1056,15 @@ function store_training_submission(): void
         ]
     );
     flash('Training submission saved.');
-    redirect('/training?week=' . rawurlencode($weekStart));
+    redirect('/training');
 }
 
 function delete_training_submission(): void
 {
     require_area('training', true);
-    $week = delete_by_id('training_submissions', (int) ($_POST['id'] ?? 0)) ?? selected_week();
+    delete_by_id('training_submissions', (int) ($_POST['id'] ?? 0));
     flash('Training log deleted.');
-    redirect('/training?week=' . rawurlencode($week));
+    redirect('/training');
 }
 
 function learner_status_options(string $selected = 'Active'): string
@@ -1216,13 +1219,13 @@ function show_learner_record(): void
     $body = '';
     foreach ($logs as $log) {
         $rag = training_rag((float) $log['attendance_pct'], (int) $log['safeguarding_flags'], $targets);
-        $body .= '<tr><td>' . e($log['week_start']) . '</td><td>' . pct($log['attendance_pct']) . '</td><td>' . pct($log['progress_pct']) . '</td><td>' . e($log['epa_readiness']) . '</td><td>' . (int) $log['safeguarding_flags'] . '</td><td>' . e($log['risk_notes']) . '</td><td>' . badge($rag['overall_rag']) . '</td></tr>';
+        $body .= '<tr><td>' . e(normal_date((string) $log['week_start'])) . '</td><td>' . pct($log['attendance_pct']) . '</td><td>' . pct($log['progress_pct']) . '</td><td>' . e($log['epa_readiness']) . '</td><td>' . (int) $log['safeguarding_flags'] . '</td><td>' . e($log['risk_notes']) . '</td><td>' . badge($rag['overall_rag']) . '</td></tr>';
     }
 
     render_page('Learner Record', '<section class="hero"><div><p class="eyebrow">Learner record</p><h1>' . e($learner['name']) . '</h1><p>Status: ' . e($learner['status']) . '</p></div><a class="button-link" href="/learners">All learners</a></section>
     <section class="metric-grid">' . $cards . '</section>
     <div class="two-col"><section class="panel"><h2>Attendance over time</h2>' . learner_chart($logs, 'attendance_pct', $targets['training_attendance_target'], $targets['training_attendance_amber']) . '</section><section class="panel"><h2>Progress over time</h2>' . learner_chart($logs, 'progress_pct', null, null) . '</section></div>
-    <section class="panel"><h2>Weekly logs</h2><table><thead><tr><th>Week</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>Risk notes</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    <section class="panel"><h2>Submission logs</h2><table><thead><tr><th>Date</th><th>Attendance</th><th>Progress</th><th>EPA</th><th>Flags</th><th>Risk notes</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function learner_chart(array $logs, string $field, ?float $target, ?float $amber): string
@@ -1272,7 +1275,7 @@ function show_social(): void
         $body .= '<tr><td>' . e($row['brand']) . '</td><td>' . (int) $row['posts'] . '</td><td>' . (int) $row['reels'] . '</td><td>' . number_format((int) $row['reach']) . '</td><td>' . (int) $row['leads'] . '</td><td>' . (int) $row['follow_ups'] . '</td><td>' . pct($row['conversion_pct']) . '</td><td>' . badge($rag['overall_rag']) . '</td>' . ($canDelete ? '<td>' . delete_form('/social/delete', (int) $row['id']) . '</td>' : '') . '</tr>';
     }
 
-    render_page('Social', '<section class="hero"><div><p class="eyebrow">Brand</p><h1>Social media metrics</h1></div>' . week_filter('/social') . '</section>' . submission_form_social($week) . '<section class="panel"><h2>Weekly brand RAG</h2><table><thead><tr><th>Brand</th><th>Posts</th><th>Reels</th><th>Reach</th><th>Leads</th><th>Follow-ups</th><th>Conversion</th><th>RAG</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
+    render_page('Social', '<section class="hero"><div><p class="eyebrow">Brand</p><h1>Social media metrics</h1></div>' . date_range_filter('/social') . '</section>' . submission_form_social($week) . '<section class="panel"><h2>Brand RAG</h2><table><thead><tr><th>Brand</th><th>Posts</th><th>Reels</th><th>Reach</th><th>Leads</th><th>Follow-ups</th><th>Conversion</th><th>RAG</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function submission_form_social(string $week): string
@@ -1281,8 +1284,8 @@ function submission_form_social(string $week): string
         return '';
     }
 
-    return '<section class="panel"><h2>Add social submission</h2><form class="grid-form" method="post" action="/social?week=' . e($week) . '">' . csrf_field() . '
-        <label>Week commencing' . week_select_field('week_start', $week) . '</label>
+    return '<section class="panel"><h2>Add social submission</h2><form class="grid-form" method="post" action="/social">' . csrf_field() . '
+        <p class="form-note span-2">Submission date: today (' . e(date('j M Y')) . ')</p>
         <label>Brand<select name="brand_id" required>' . lookup_options('brands') . '</select></label>
         <label>Posts<input type="number" name="posts" min="0" step="1" required></label>
         <label>Reels<input type="number" name="reels" min="0" step="1" required></label>
@@ -1299,12 +1302,12 @@ function submission_form_social(string $week): string
 function store_social_submission(): void
 {
     require_area('social', true);
-    $weekStart = normalize_week_start((string) $_POST['week_start']);
+    $submissionDate = date('Y-m-d');
     execute_sql(
         'INSERT INTO brand_submissions (week_start, brand_id, posts, reels, reach, engagement, leads, follow_ups, conversion_pct, notes, submitted_by)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
-            $weekStart,
+            $submissionDate,
             (int) $_POST['brand_id'],
             (int) $_POST['posts'],
             (int) $_POST['reels'],
@@ -1318,15 +1321,15 @@ function store_social_submission(): void
         ]
     );
     flash('Social submission saved.');
-    redirect('/social?week=' . rawurlencode($weekStart));
+    redirect('/social');
 }
 
 function delete_social_submission(): void
 {
     require_area('social', true);
-    $week = delete_by_id('brand_submissions', (int) ($_POST['id'] ?? 0)) ?? selected_week();
+    delete_by_id('brand_submissions', (int) ($_POST['id'] ?? 0));
     flash('Social submission deleted.');
-    redirect('/social?week=' . rawurlencode($week));
+    redirect('/social');
 }
 
 function show_hr(): void
@@ -1343,7 +1346,7 @@ function show_hr(): void
         $body .= '<tr><td>' . e($row['role_name']) . '</td><td>' . (int) $row['required_count'] . '</td><td>' . (int) $row['active_pipeline'] . '</td><td>' . (int) $row['interviews'] . '</td><td>' . (int) $row['offers'] . '</td><td>' . $gap . '</td><td>' . badge($rag['pipeline_rag']) . '</td>' . ($canDelete ? '<td>' . delete_form('/hr/delete', (int) $row['id']) . '</td>' : '') . '</tr>';
     }
 
-    render_page('HR', '<section class="hero"><div><p class="eyebrow">People</p><h1>Recruitment pipeline</h1></div>' . week_filter('/hr') . '</section>' . submission_form_hr($week) . '<section class="panel"><h2>Weekly HR RAG</h2><table><thead><tr><th>Role</th><th>Required</th><th>Pipeline</th><th>Interviews</th><th>Offers</th><th>Gap</th><th>RAG</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
+    render_page('HR', '<section class="hero"><div><p class="eyebrow">People</p><h1>Recruitment pipeline</h1></div>' . date_range_filter('/hr') . '</section>' . submission_form_hr($week) . '<section class="panel"><h2>HR RAG</h2><table><thead><tr><th>Role</th><th>Required</th><th>Pipeline</th><th>Interviews</th><th>Offers</th><th>Gap</th><th>RAG</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function submission_form_hr(string $week): string
@@ -1352,8 +1355,8 @@ function submission_form_hr(string $week): string
         return '';
     }
 
-    return '<section class="panel"><h2>Add HR submission</h2><form class="grid-form" method="post" action="/hr?week=' . e($week) . '">' . csrf_field() . '
-        <label>Week commencing' . week_select_field('week_start', $week) . '</label>
+    return '<section class="panel"><h2>Add HR submission</h2><form class="grid-form" method="post" action="/hr">' . csrf_field() . '
+        <p class="form-note span-2">Submission date: today (' . e(date('j M Y')) . ')</p>
         <label>Role<select name="role_id" required>' . lookup_options('recruitment_roles') . '</select></label>
         <label>Required<input type="number" name="required_count" min="0" step="1" required></label>
         <label>Active pipeline<input type="number" name="active_pipeline" min="0" step="1" required></label>
@@ -1367,12 +1370,12 @@ function submission_form_hr(string $week): string
 function store_hr_submission(): void
 {
     require_area('hr', true);
-    $weekStart = normalize_week_start((string) $_POST['week_start']);
+    $submissionDate = date('Y-m-d');
     execute_sql(
         'INSERT INTO hr_recruitment_submissions (week_start, role_id, required_count, active_pipeline, interviews, offers, notes, submitted_by)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         [
-            $weekStart,
+            $submissionDate,
             (int) $_POST['role_id'],
             (int) $_POST['required_count'],
             (int) $_POST['active_pipeline'],
@@ -1383,15 +1386,15 @@ function store_hr_submission(): void
         ]
     );
     flash('HR submission saved.');
-    redirect('/hr?week=' . rawurlencode($weekStart));
+    redirect('/hr');
 }
 
 function delete_hr_submission(): void
 {
     require_area('hr', true);
-    $week = delete_by_id('hr_recruitment_submissions', (int) ($_POST['id'] ?? 0)) ?? selected_week();
+    delete_by_id('hr_recruitment_submissions', (int) ($_POST['id'] ?? 0));
     flash('HR submission deleted.');
-    redirect('/hr?week=' . rawurlencode($week));
+    redirect('/hr');
 }
 
 function leadership_rows(string $week, array $targets): array
@@ -1459,7 +1462,7 @@ function show_leadership(): void
         $body .= '<tr><td>' . e($row['leader']) . '</td><td>' . e($row['area']) . '</td><td>' . number_format($row['revenue_score'], 1) . '</td><td>' . number_format($row['brand_score'], 1) . '</td><td>' . number_format($row['training_score'], 1) . '</td><td>' . number_format($row['recruitment_score'], 1) . '</td><td>' . number_format($row['risk_action_score'], 1) . '</td><td>' . badge($row['overall_rag']) . '</td></tr>';
     }
 
-    render_page('Leadership', '<section class="hero"><div><p class="eyebrow">Shareholder view</p><h1>Leadership RAG</h1></div>' . week_filter('/leadership') . '</section><section class="panel"><table><thead><tr><th>Leader</th><th>Area</th><th>Revenue</th><th>Brand</th><th>Training</th><th>Recruitment</th><th>Risk/action</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    render_page('Leadership', '<section class="hero"><div><p class="eyebrow">Shareholder view</p><h1>Leadership RAG</h1></div>' . date_range_filter('/leadership') . '</section><section class="panel"><table><thead><tr><th>Leader</th><th>Area</th><th>Revenue</th><th>Brand</th><th>Training</th><th>Recruitment</th><th>Risk/action</th><th>Overall</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function show_strategy(): void
@@ -1469,7 +1472,7 @@ function show_strategy(): void
     $targets = targets_for_kpi();
     $metrics = executive_metrics($week, $targets);
     $items = [
-        ['Weekly RTB', $metrics['weekly_rtb'], $targets['strategy_weekly_rtb_target'], $metrics['weekly_rtb_rag'], true],
+        ['RTB', $metrics['weekly_rtb'], $targets['strategy_weekly_rtb_target'], $metrics['weekly_rtb_rag'], true],
         ['Occupied Chairs', $metrics['occupied_chairs'], $targets['strategy_occupied_chairs_target'], $metrics['occupied_chairs_rag'], false],
         ['Active Learners', $metrics['active_learners'], $targets['strategy_active_learners_target'], $metrics['active_learners_rag'], false],
         ['Social Leads', $metrics['social_leads'], $targets['strategy_social_leads_target'], $metrics['social_leads_rag'], false],
@@ -1482,7 +1485,7 @@ function show_strategy(): void
         $body .= '<tr><td>' . e($name) . '</td><td>' . ($isMoney ? money($current) : e($current)) . '</td><td>' . ($isMoney ? money($required) : e($required)) . '</td><td>' . ($isMoney ? money($variance) : e($variance)) . '</td><td>' . badge($rag) . '</td></tr>';
     }
 
-    render_page('5x5 Strategy', '<section class="hero"><div><p class="eyebrow">5x5</p><h1>Strategic run-rate</h1></div>' . week_filter('/strategy') . '</section><section class="panel"><table><thead><tr><th>KPI</th><th>Current</th><th>Required</th><th>Variance</th><th>Status</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
+    render_page('5x5 Strategy', '<section class="hero"><div><p class="eyebrow">5x5</p><h1>Strategic run-rate</h1></div>' . date_range_filter('/strategy') . '</section><section class="panel"><table><thead><tr><th>KPI</th><th>Current</th><th>Required</th><th>Variance</th><th>Status</th></tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function show_risks(): void
@@ -1492,16 +1495,16 @@ function show_risks(): void
     $body = '';
     $canDelete = can_access('leadership', true);
     foreach ($rows as $row) {
-        $body .= '<tr><td>' . e(normalize_week_start((string) $row['week_start'])) . '</td><td>' . e($row['trigger_label']) . '</td><td>' . e($row['risk']) . '</td><td>' . e($row['owner']) . '</td><td>' . e($row['priority']) . '</td><td>' . e($row['status']) . '</td><td>' . e($row['due_date']) . '</td>' . ($canDelete ? '<td>' . delete_form('/risks/delete', (int) $row['id']) . '</td>' : '') . '</tr>';
+        $body .= '<tr><td>' . e(normal_date((string) $row['week_start'])) . '</td><td>' . e($row['trigger_label']) . '</td><td>' . e($row['risk']) . '</td><td>' . e($row['owner']) . '</td><td>' . e($row['priority']) . '</td><td>' . e($row['status']) . '</td><td>' . e($row['due_date']) . '</td>' . ($canDelete ? '<td>' . delete_form('/risks/delete', (int) $row['id']) . '</td>' : '') . '</tr>';
     }
 
-    render_page('Risks', '<section class="hero"><div><p class="eyebrow">Governance</p><h1>Risk register</h1></div></section>' . risk_form() . '<section class="panel"><table><thead><tr><th>Week commencing</th><th>Trigger</th><th>Risk</th><th>Owner</th><th>Priority</th><th>Status</th><th>Due</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
+    render_page('Risks', '<section class="hero"><div><p class="eyebrow">Governance</p><h1>Risk register</h1></div></section>' . risk_form() . '<section class="panel"><table><thead><tr><th>Date</th><th>Trigger</th><th>Risk</th><th>Owner</th><th>Priority</th><th>Status</th><th>Due</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function risk_form(): string
 {
     return '<section class="panel"><h2>Add risk</h2><form class="grid-form" method="post" action="/risks">' . csrf_field() . '
-        <label>Week commencing' . week_select_field('week_start', selected_week()) . '</label>
+        <p class="form-note span-2">Entry date: today (' . e(date('j M Y')) . ')</p>
         <label>Owner<select name="owner_user_id">' . lookup_options('users') . '</select></label>
         <label>Priority<select name="priority"><option>High</option><option>Medium</option><option>Low</option></select></label>
         <label>Status<select name="status"><option>Open</option><option>In Progress</option><option>Closed</option></select></label>
@@ -1516,10 +1519,10 @@ function risk_form(): string
 function store_risk(): void
 {
     require_area('leadership', true);
-    $weekStart = normalize_week_start((string) $_POST['week_start']);
+    $submissionDate = date('Y-m-d');
     execute_sql(
         'INSERT INTO risk_register (week_start, trigger_label, risk, owner_user_id, priority, status, due_date, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [$weekStart, $_POST['trigger_label'], $_POST['risk'], (int) $_POST['owner_user_id'], $_POST['priority'], $_POST['status'], $_POST['due_date'] ?: null, $_POST['notes'] ?: null]
+        [$submissionDate, $_POST['trigger_label'], $_POST['risk'], (int) $_POST['owner_user_id'], $_POST['priority'], $_POST['status'], $_POST['due_date'] ?: null, $_POST['notes'] ?: null]
     );
     flash('Risk saved.');
     redirect('/risks');
@@ -1540,16 +1543,16 @@ function show_actions(): void
     $body = '';
     $canDelete = can_access('leadership', true);
     foreach ($rows as $row) {
-        $body .= '<tr><td>' . e(normalize_week_start((string) $row['week_start'])) . '</td><td>' . e($row['owner']) . '</td><td>' . e($row['action']) . '</td><td>' . e($row['linked_area']) . '</td><td>' . e($row['priority']) . '</td><td>' . e($row['status']) . '</td><td>' . e($row['due_date']) . '</td>' . ($canDelete ? '<td>' . delete_form('/actions/delete', (int) $row['id']) . '</td>' : '') . '</tr>';
+        $body .= '<tr><td>' . e(normal_date((string) $row['week_start'])) . '</td><td>' . e($row['owner']) . '</td><td>' . e($row['action']) . '</td><td>' . e($row['linked_area']) . '</td><td>' . e($row['priority']) . '</td><td>' . e($row['status']) . '</td><td>' . e($row['due_date']) . '</td>' . ($canDelete ? '<td>' . delete_form('/actions/delete', (int) $row['id']) . '</td>' : '') . '</tr>';
     }
 
-    render_page('Actions', '<section class="hero"><div><p class="eyebrow">Governance</p><h1>Action tracker</h1></div></section>' . action_form() . '<section class="panel"><table><thead><tr><th>Week commencing</th><th>Owner</th><th>Action</th><th>Area</th><th>Priority</th><th>Status</th><th>Due</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
+    render_page('Actions', '<section class="hero"><div><p class="eyebrow">Governance</p><h1>Action tracker</h1></div></section>' . action_form() . '<section class="panel"><table><thead><tr><th>Date</th><th>Owner</th><th>Action</th><th>Area</th><th>Priority</th><th>Status</th><th>Due</th>' . ($canDelete ? '<th></th>' : '') . '</tr></thead><tbody>' . $body . '</tbody></table></section>');
 }
 
 function action_form(): string
 {
     return '<section class="panel"><h2>Add action</h2><form class="grid-form" method="post" action="/actions">' . csrf_field() . '
-        <label>Week commencing' . week_select_field('week_start', selected_week()) . '</label>
+        <p class="form-note span-2">Entry date: today (' . e(date('j M Y')) . ')</p>
         <label>Owner<select name="owner_user_id">' . lookup_options('users') . '</select></label>
         <label>Priority<select name="priority"><option>High</option><option>Medium</option><option>Low</option></select></label>
         <label>Status<select name="status"><option>Open</option><option>In Progress</option><option>Closed</option></select></label>
@@ -1564,10 +1567,10 @@ function action_form(): string
 function store_action(): void
 {
     require_area('leadership', true);
-    $weekStart = normalize_week_start((string) $_POST['week_start']);
+    $submissionDate = date('Y-m-d');
     execute_sql(
         'INSERT INTO action_tracker (week_start, owner_user_id, action, due_date, status, priority, linked_area, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [$weekStart, (int) $_POST['owner_user_id'], $_POST['action'], $_POST['due_date'] ?: null, $_POST['status'], $_POST['priority'], $_POST['linked_area'], $_POST['notes'] ?: null]
+        [$submissionDate, (int) $_POST['owner_user_id'], $_POST['action'], $_POST['due_date'] ?: null, $_POST['status'], $_POST['priority'], $_POST['linked_area'], $_POST['notes'] ?: null]
     );
     flash('Action saved.');
     redirect('/actions');
@@ -1586,10 +1589,10 @@ function show_submissions(): void
     $cards = '';
     foreach ([['/barbers', 'Barbers', 'barbers'], ['/training', 'Training', 'training'], ['/social', 'Social', 'social'], ['/hr', 'HR', 'hr']] as [$href, $label, $area]) {
         if (can_access($area)) {
-            $cards .= '<a class="tile" href="' . e($href) . '"><strong>' . e($label) . '</strong><span>Open weekly submissions</span></a>';
+            $cards .= '<a class="tile" href="' . e($href) . '"><strong>' . e($label) . '</strong><span>Open submissions</span></a>';
         }
     }
-    render_page('Submissions', '<section class="hero"><div><p class="eyebrow">Weekly inputs</p><h1>Submissions</h1></div></section><section class="tile-grid">' . $cards . '</section>');
+    render_page('Submissions', '<section class="hero"><div><p class="eyebrow">Department inputs</p><h1>Submissions</h1></div></section><section class="tile-grid">' . $cards . '</section>');
 }
 
 function show_profile(): void

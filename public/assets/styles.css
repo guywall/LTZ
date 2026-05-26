@@ -267,7 +267,20 @@ th {
 .inline-form {
     align-items: end;
     display: flex;
+    flex-wrap: wrap;
     gap: 10px;
+}
+
+.filterbar {
+    justify-content: flex-end;
+}
+
+.filterbar label {
+    min-width: 142px;
+}
+
+.filterbar button {
+    min-width: 86px;
 }
 
 .table-form {
@@ -277,7 +290,12 @@ th {
     grid-template-columns: minmax(130px, 1fr) minmax(110px, 1fr) auto;
 }
 
-.table-form input {
+.learner-status-form {
+    grid-template-columns: minmax(130px, 1fr) auto;
+}
+
+.table-form input,
+.table-form select {
     margin-top: 0;
 }
 
@@ -303,6 +321,16 @@ th {
 
 .span-2 {
     grid-column: span 2;
+}
+
+.form-note {
+    background: #eef6f5;
+    border: 1px solid #cfe5e1;
+    border-radius: 6px;
+    color: var(--primary-dark);
+    font-weight: 800;
+    margin: 0;
+    padding: 10px 12px;
 }
 
 .tile-grid,

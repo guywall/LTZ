@@ -6,7 +6,7 @@ Custom PHP + MySQL web app for the LTZ weekly cadence workflow that was original
 
 - Named login accounts with PHP sessions and hashed passwords.
 - Role-based access for barbers, training, social, HR, leadership, strategy, and admin.
-- Weekly submission forms for each functional area.
+- Dated submission forms for each functional area, with dashboards filtered by reporting period.
 - RAG calculations based on the supplied workbook targets and formulas.
 - Executive, functional, leadership, and 5x5 strategy dashboards.
 - Risk register, action tracker, target editing, lookup editing, and user creation.

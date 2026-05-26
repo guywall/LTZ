@@ -132,6 +132,7 @@ function setup_write_config(string $configFile, array $data): void
         . "    'db_name' => " . setup_php_string($data['database']) . ",\n"
         . "    'db_user' => " . setup_php_string($data['user']) . ",\n"
         . "    'db_pass' => " . setup_php_string($data['password']) . ",\n"
+        . "    'timezone' => 'Europe/London',\n"
         . "];\n";
 
     if (file_put_contents($configFile, $content, LOCK_EX) === false) {
